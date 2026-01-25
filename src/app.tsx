@@ -29,7 +29,7 @@ function loadFromLS(): AppData | null {
   }
 }
 
-function cloneData(d: AppData): AppData {
+function cloneData<T>(d: T): T {
   return JSON.parse(JSON.stringify(d));
 }
 
@@ -53,7 +53,6 @@ export default function App() {
   const [selectedDish, setSelectedDish] = useState<string | null>(null);
   const [showFix, setShowFix] = useState(false);
 
-  // load previous state
   useEffect(() => {
     const saved = loadFromLS();
     if (saved) {
@@ -74,7 +73,6 @@ export default function App() {
   const onUpload = async (file: File) => {
     const buf = await file.arrayBuffer();
     const parsed = parseWorkbook(buf);
-    // safety: ensure mapping rows exist for every recipe ingredient
     parsed.recipes.forEach((r) => ensureMappingRow(parsed, r.ingredientRecipe));
     recompute(parsed);
     setTab("DASHBOARD");
@@ -239,8 +237,8 @@ export default function App() {
 
       <div style={{ height: 18 }} />
       <div className="small">
-        Prinzip: nichts blockiert. Wenn Daten fehlen, siehst du „—“. Preisänderungen ändern DB sofort (Wareneinsatz
-        kommt aus dem Rezept).
+        Neu: Mapping kannst du jetzt direkt im Gericht je Zutat auswählen (Dropdown). Das schreibt automatisch die
+        Korrektur im Mapping.
       </div>
     </div>
   );
@@ -254,7 +252,7 @@ function UploadScreen({ dataLoaded, onUpload }: { dataLoaded: boolean; onUpload:
     <div className="card">
       <div className="h1">1) Excel laden</div>
       <div className="small">
-        Lade deine Datei <b>HeisseEcke_WebApp_Datenpaket_FULL.xlsx</b> hoch. Danach ist Dashboard sofort nutzbar.
+        Lade deine Datei <b>HeisseEcke_WebApp_Datenpaket_FULL.xlsx</b> hoch.
       </div>
       <div style={{ height: 10 }} />
       <div className="row">
@@ -354,7 +352,7 @@ function DashboardScreen({
       <div className="row">
         <div>
           <div className="h1">2) Dashboard</div>
-          <div className="small">Hier kannst du Preise direkt ändern. Klick ein Gericht für Rezept/Details.</div>
+          <div className="small">Preise direkt ändern. Klick ein Gericht für Rezept + Mapping-Dropdowns.</div>
         </div>
         <div style={{ marginLeft: "auto" }} className="row">
           <input
@@ -372,13 +370,13 @@ function DashboardScreen({
         <div className="small">Neues Gericht anlegen</div>
         <div className="row" style={{ marginTop: 8 }}>
           <input
-            placeholder="Gerichtname (z.B. Currywurst Dippers)"
+            placeholder="Gerichtname"
             value={newDishName}
             onChange={(e) => setNewDishName(e.target.value)}
             style={{ minWidth: 320 }}
           />
           <input
-            placeholder="Start-Preis (Speisekarte) optional"
+            placeholder="Start-Preis optional"
             value={newDishPrice}
             onChange={(e) => setNewDishPrice(e.target.value)}
             style={{ width: 220 }}
@@ -386,7 +384,6 @@ function DashboardScreen({
           <button className="primary" onClick={addDish}>
             + Gericht
           </button>
-          <span className="small">Hinweis: Wareneinsatz kommt, sobald du Rezeptzeilen ergänzt.</span>
         </div>
       </div>
 
@@ -482,6 +479,7 @@ function DishScreen({
     );
 
   const lines = data.recipes.filter((r) => r.dish === dishName);
+  const inventoryOptions = [...data.inventory.map((i) => i.name)].sort((a, b) => a.localeCompare(b, "de"));
 
   const price = dish.priceTest ?? dish.priceMenu ?? dish.priceMaster ?? null;
   const revToday = price && sold > 0 ? price * sold : null;
@@ -504,10 +502,8 @@ function DishScreen({
     const qty = toNumber(newQty);
     const c = cloneData(data);
 
-    // add mapping row if missing
     ensureMappingRow(c, ing);
 
-    // add recipe line
     c.recipes.push({
       dish: dish.dish,
       ingredientRecipe: ing,
@@ -544,13 +540,32 @@ function DishScreen({
     onChange(c);
   };
 
+  /** ✅ NEU: Mapping direkt im Gericht setzen (Dropdown) */
+  const setMappingCorrection = (ingredientRecipe: string, invNameOrEmpty: string) => {
+    const c = cloneData(data);
+    ensureMappingRow(c, ingredientRecipe);
+    const m = c.mapping.find((x) => x.recipeName === ingredientRecipe);
+    if (!m) return;
+    m.correction = invNameOrEmpty ? invNameOrEmpty : null;
+    m.status = "OK";
+    onChange(c);
+  };
+
+  const getMappingInfo = (ingredientRecipe: string) => {
+    const m = data.mapping.find((x) => x.recipeName === ingredientRecipe) ?? null;
+    return {
+      suggestion: m?.suggestion ?? null,
+      correction: m?.correction ?? null
+    };
+  };
+
   return (
     <div className="card">
       <div className="row">
         <div>
           <div className="h1">{dish.dish}</div>
           <div className="small">
-            Preise ändern → DB live. Rezeptzeilen ändern → Wareneinsatz & DB live.
+            Neu: Du kannst pro Rezept-Zutat direkt hier den Inventur-Artikel auswählen (Dropdown).
           </div>
         </div>
         <div style={{ marginLeft: "auto" }} className="row">
@@ -633,7 +648,7 @@ function DishScreen({
       <div className="card">
         <div className="h1">Rezept</div>
         <div className="small">
-          Neue Zutat hinzufügen. Falls die Zutat in der Inventur fehlt: Inventur → Zutat anlegen.
+          Wichtig: Wenn eine Zutat falsch zugeordnet ist, ändere sie jetzt direkt hier im Dropdown „Inventur-Artikel“.
         </div>
 
         <div style={{ height: 10 }} />
@@ -642,13 +657,13 @@ function DishScreen({
           <div className="small">Neue Rezeptzeile</div>
           <div className="row" style={{ marginTop: 8 }}>
             <input
-              placeholder="Zutat im Rezept (z.B. Currywurst)"
+              placeholder="Zutat im Rezept"
               value={newIng}
               onChange={(e) => setNewIng(e.target.value)}
               style={{ minWidth: 320 }}
             />
             <input
-              placeholder="Menge (z.B. 180)"
+              placeholder="Menge"
               value={newQty}
               onChange={(e) => setNewQty(e.target.value)}
               style={{ width: 180 }}
@@ -662,9 +677,6 @@ function DishScreen({
               + Zeile
             </button>
           </div>
-          <div className="small" style={{ marginTop: 6 }}>
-            Mapping wird automatisch angelegt (Status PRÜFEN), falls neu.
-          </div>
         </div>
 
         <div style={{ height: 10 }} />
@@ -675,47 +687,71 @@ function DishScreen({
               <th>Zutat</th>
               <th>Menge</th>
               <th>Einheit</th>
-              <th>Gemappt</th>
+              <th>Inventur-Artikel (wählen)</th>
+              <th>Aktiv gemappt</th>
               <th>Kosten</th>
               <th>Status</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {lines.map((l, idx) => (
-              <tr key={idx}>
-                <td>{l.ingredientRecipe}</td>
-                <td style={{ width: 120 }}>
-                  <input
-                    value={l.qty ?? ""}
-                    onChange={(e) => updateRecipeField(l.ingredientRecipe, "qty", e.target.value)}
-                    style={{ width: 100 }}
-                  />
-                </td>
-                <td style={{ width: 120 }}>
-                  <select
-                    value={l.unit ?? ""}
-                    onChange={(e) => updateRecipeField(l.ingredientRecipe, "unit", e.target.value)}
-                  >
-                    <option value="">—</option>
-                    <option value="g">g</option>
-                    <option value="ml">ml</option>
-                    <option value="stk">stk</option>
-                  </select>
-                </td>
-                <td>{l.mappedInventory ?? "—"}</td>
-                <td>{money(l.cost)}</td>
-                <td>{l.status ?? "—"}</td>
-                <td style={{ width: 120 }}>
-                  <button className="secondary" onClick={() => deleteRecipeLine(l.ingredientRecipe)}>
-                    Entfernen
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {lines.map((l, idx) => {
+              const mi = getMappingInfo(l.ingredientRecipe);
+              const suggestionLabel = mi.suggestion ? `Vorschlag: ${mi.suggestion}` : "kein Vorschlag";
+              return (
+                <tr key={idx}>
+                  <td>{l.ingredientRecipe}</td>
+                  <td style={{ width: 120 }}>
+                    <input
+                      value={l.qty ?? ""}
+                      onChange={(e) => updateRecipeField(l.ingredientRecipe, "qty", e.target.value)}
+                      style={{ width: 100 }}
+                    />
+                  </td>
+                  <td style={{ width: 120 }}>
+                    <select
+                      value={l.unit ?? ""}
+                      onChange={(e) => updateRecipeField(l.ingredientRecipe, "unit", e.target.value)}
+                    >
+                      <option value="">—</option>
+                      <option value="g">g</option>
+                      <option value="ml">ml</option>
+                      <option value="stk">stk</option>
+                      <option value="kg">kg</option>
+                      <option value="l">l</option>
+                    </select>
+                  </td>
+
+                  {/* ✅ NEU: Dropdown direkt im Gericht */}
+                  <td style={{ width: 360 }}>
+                    <select
+                      value={mi.correction ?? ""}
+                      onChange={(e) => setMappingCorrection(l.ingredientRecipe, e.target.value)}
+                      style={{ width: "100%" }}
+                    >
+                      <option value="">{`— (Vorschlag verwenden: ${suggestionLabel})`}</option>
+                      {inventoryOptions.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+
+                  <td>{l.mappedInventory ?? "—"}</td>
+                  <td>{money(l.cost)}</td>
+                  <td>{l.status ?? "—"}</td>
+                  <td style={{ width: 120 }}>
+                    <button className="secondary" onClick={() => deleteRecipeLine(l.ingredientRecipe)}>
+                      Entfernen
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
             {lines.length === 0 && (
               <tr>
-                <td colSpan={7} className="small">
+                <td colSpan={8} className="small">
                   Noch keine Rezeptzeilen. Füge oben eine hinzu.
                 </td>
               </tr>
@@ -790,13 +826,13 @@ function InventoryScreen({ data, onChange }: { data: AppData | null; onChange: (
         <div className="small">Neue Zutat anlegen</div>
         <div className="row" style={{ marginTop: 8 }}>
           <input
-            placeholder="Zutatname (z.B. Cheddar Scheiben)"
+            placeholder="Zutatname"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             style={{ minWidth: 320 }}
           />
           <input
-            placeholder="EK (z.B. 12,90)"
+            placeholder="EK"
             value={newEK}
             onChange={(e) => setNewEK(e.target.value)}
             style={{ width: 180 }}
@@ -811,7 +847,6 @@ function InventoryScreen({ data, onChange }: { data: AppData | null; onChange: (
           <button className="primary" onClick={addInventory}>
             + Zutat
           </button>
-          <span className="small">Wenn EK/Einheit fehlen, zeigt die App das als Hinweis.</span>
         </div>
       </div>
 
@@ -891,7 +926,7 @@ function MappingScreen({ data, onChange }: { data: AppData | null; onChange: (d:
       <div className="row">
         <div>
           <div className="h1">4) Mapping</div>
-          <div className="small">Rezept-Zutat → Inventur-Zutat. Hier machst du die Daten sauber.</div>
+          <div className="small">Optional: Mapping zentral ändern. Im Gericht geht’s jetzt auch direkt.</div>
         </div>
         <div style={{ marginLeft: "auto" }} className="row">
           <input
@@ -925,7 +960,10 @@ function MappingScreen({ data, onChange }: { data: AppData | null; onChange: (d:
                     const v = e.target.value;
                     const c = cloneData(data);
                     const x = c.mapping.find((z) => z.recipeName === m.recipeName);
-                    if (x) x.correction = v || null;
+                    if (x) {
+                      x.correction = v || null;
+                      x.status = "OK";
+                    }
                     onChange(c);
                   }}
                   style={{ width: "100%" }}
@@ -980,11 +1018,15 @@ function HintsScreen({ issues, onJumpDish }: { issues: DataIssue[]; onJumpDish: 
                 <td>{x.type}</td>
                 <td>{x.message}</td>
                 <td className="small">{x.actionHint}</td>
-                <td style={{ width: 120 }}>{x.dish ? (
-                  <button className="secondary" onClick={() => onJumpDish(x.dish!)}>
-                    Gericht
-                  </button>
-                ) : "—"}</td>
+                <td style={{ width: 120 }}>
+                  {x.dish ? (
+                    <button className="secondary" onClick={() => onJumpDish(x.dish!)}>
+                      Gericht
+                    </button>
+                  ) : (
+                    "—"
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -994,7 +1036,6 @@ function HintsScreen({ issues, onJumpDish }: { issues: DataIssue[]; onJumpDish: 
   );
 }
 
-/** ===== Minimaler Loop (nur wenn du klickst) ===== */
 function QuickFixModal(props: {
   issue: DataIssue;
   onClose: () => void;
@@ -1037,7 +1078,7 @@ function QuickFixModal(props: {
 
         {issue.type === "PREIS" && issue.dish && (
           <div className="card">
-            <div className="small">Testpreis setzen (sofortige Simulation)</div>
+            <div className="small">Testpreis setzen</div>
             <div className="row" style={{ marginTop: 8 }}>
               <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="z.B. 8,90" style={{ width: 180 }} />
               <button
@@ -1112,7 +1153,7 @@ function QuickFixModal(props: {
         )}
 
         <div style={{ height: 8 }} />
-        <div className="small">MVP-Regel: Quick-Fix ist optional. Keine Pflicht-Loops.</div>
+        <div className="small">MVP: Quick-Fix ist optional. Nichts blockiert.</div>
       </div>
     </div>
   );
