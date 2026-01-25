@@ -824,3 +824,296 @@ function InventoryScreen({ data, onChange }: { data: AppData | null; onChange: (
             <th>EK</th>
             <th>Einheit</th>
             <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((i) => (
+            <tr key={i.name}>
+              <td style={{ fontWeight: 900 }}>{i.name}</td>
+              <td style={{ width: 140 }}>
+                <input
+                  value={i.ekRaw ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(",", ".");
+                    const c = cloneData(data);
+                    const x = c.inventory.find((z) => z.name === i.name);
+                    if (x) x.ekRaw = v === "" ? null : Number(v);
+                    onChange(c);
+                  }}
+                  style={{ width: 120 }}
+                />
+              </td>
+              <td style={{ width: 140 }}>
+                <select
+                  value={i.unitRaw ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const c = cloneData(data);
+                    const x = c.inventory.find((z) => z.name === i.name);
+                    if (x) x.unitRaw = v || null;
+                    onChange(c);
+                  }}
+                >
+                  <option value="">—</option>
+                  <option value="kg">kg</option>
+                  <option value="g">g</option>
+                  <option value="l">l</option>
+                  <option value="ml">ml</option>
+                  <option value="stk">stk</option>
+                </select>
+              </td>
+              <td>{i.status ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MappingScreen({ data, onChange }: { data: AppData | null; onChange: (d: AppData) => void }) {
+  const [q, setQ] = useState("");
+  if (!data)
+    return (
+      <div className="card">
+        <div className="h1">Mapping</div>
+        <div className="small">Bitte zuerst Excel laden.</div>
+      </div>
+    );
+
+  const inventoryOptions = [...data.inventory.map((i) => i.name)].sort((a, b) => a.localeCompare(b, "de"));
+  const rows = data.mapping
+    .filter((m) => (q ? m.recipeName.toLowerCase().includes(q.toLowerCase()) : true))
+    .sort((a, b) => (a.status === "PRÜFEN" ? -1 : 1) - (b.status === "PRÜFEN" ? -1 : 1));
+
+  return (
+    <div className="card">
+      <div className="row">
+        <div>
+          <div className="h1">4) Mapping</div>
+          <div className="small">Rezept-Zutat → Inventur-Zutat. Hier machst du die Daten sauber.</div>
+        </div>
+        <div style={{ marginLeft: "auto" }} className="row">
+          <input
+            placeholder="Rezept-Zutat suchen…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            style={{ minWidth: 260 }}
+          />
+        </div>
+      </div>
+
+      <div style={{ height: 10 }} />
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Rezept-Zutat</th>
+            <th>Vorschlag</th>
+            <th>Korrektur</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((m) => (
+            <tr key={m.recipeName}>
+              <td style={{ fontWeight: 900 }}>{m.recipeName}</td>
+              <td>{m.suggestion ?? "—"}</td>
+              <td style={{ width: 360 }}>
+                <select
+                  value={m.correction ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const c = cloneData(data);
+                    const x = c.mapping.find((z) => z.recipeName === m.recipeName);
+                    if (x) x.correction = v || null;
+                    onChange(c);
+                  }}
+                  style={{ width: "100%" }}
+                >
+                  <option value="">— (Vorschlag verwenden)</option>
+                  {inventoryOptions.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td>{m.status ?? "—"}</td>
+            </tr>
+          ))}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={4} className="small">
+                Keine Mapping-Zeilen gefunden.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function HintsScreen({ issues, onJumpDish }: { issues: DataIssue[]; onJumpDish: (dish: string) => void }) {
+  return (
+    <div className="card">
+      <div className="h1">Hinweise</div>
+      <div className="small">Blockiert nichts. Zeigt nur, warum irgendwo „—“ steht.</div>
+      <div style={{ height: 10 }} />
+      {issues.length === 0 ? (
+        <span className="pill">
+          <span className="dot ok" /> Alles OK
+        </span>
+      ) : (
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Typ</th>
+              <th>Was fehlt?</th>
+              <th>So fixen</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {issues.map((x, idx) => (
+              <tr key={idx}>
+                <td>{x.type}</td>
+                <td>{x.message}</td>
+                <td className="small">{x.actionHint}</td>
+                <td style={{ width: 120 }}>{x.dish ? (
+                  <button className="secondary" onClick={() => onJumpDish(x.dish!)}>
+                    Gericht
+                  </button>
+                ) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/** ===== Minimaler Loop (nur wenn du klickst) ===== */
+function QuickFixModal(props: {
+  issue: DataIssue;
+  onClose: () => void;
+  onFixPrice: (dish: string, price: number) => void;
+  onFixEK: (invName: string, ek: number, unit: string) => void;
+  onGoMapping: () => void;
+  onGoDish: (dish: string) => void;
+  onGoInventur: () => void;
+}) {
+  const { issue } = props;
+  const [price, setPrice] = useState("");
+  const [ek, setEk] = useState("");
+  const [unit, setUnit] = useState("kg");
+
+  const title =
+    issue.type === "PREIS"
+      ? "Preis fehlt"
+      : issue.type === "EK"
+      ? "Einkaufspreis fehlt"
+      : issue.type === "MAPPING"
+      ? "Zuordnung fehlt"
+      : issue.type === "MENGE"
+      ? "Menge fehlt"
+      : "Hinweis";
+
+  return (
+    <div className="modalOverlay" onClick={props.onClose}>
+      <div className="card modal" onClick={(e) => e.stopPropagation()}>
+        <div className="row">
+          <div>
+            <div className="h1">Quick-Fix: {title}</div>
+            <div className="small">{issue.message}</div>
+          </div>
+          <button className="secondary" style={{ marginLeft: "auto" }} onClick={props.onClose}>
+            Schließen
+          </button>
+        </div>
+
+        <div style={{ height: 12 }} />
+
+        {issue.type === "PREIS" && issue.dish && (
+          <div className="card">
+            <div className="small">Testpreis setzen (sofortige Simulation)</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="z.B. 8,90" style={{ width: 180 }} />
+              <button
+                className="primary"
+                onClick={() => {
+                  const n = toNumber(price);
+                  if (n != null) props.onFixPrice(issue.dish!, n);
+                }}
+              >
+                Speichern
+              </button>
+              <button className="secondary" onClick={() => props.onGoDish(issue.dish!)}>
+                Zum Gericht
+              </button>
+            </div>
+          </div>
+        )}
+
+        {issue.type === "EK" && issue.ingredient && (
+          <div className="card">
+            <div className="small">Einkaufspreis + Einheit</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <input value={ek} onChange={(e) => setEk(e.target.value)} placeholder="z.B. 6,20" style={{ width: 180 }} />
+              <select value={unit} onChange={(e) => setUnit(e.target.value)}>
+                <option value="kg">kg</option>
+                <option value="g">g</option>
+                <option value="l">l</option>
+                <option value="ml">ml</option>
+                <option value="stk">stk</option>
+              </select>
+              <button
+                className="primary"
+                onClick={() => {
+                  const n = toNumber(ek);
+                  if (n != null) props.onFixEK(issue.ingredient!, n, unit);
+                }}
+              >
+                Speichern
+              </button>
+              <button className="secondary" onClick={props.onGoInventur}>
+                Zur Inventur
+              </button>
+            </div>
+          </div>
+        )}
+
+        {issue.type === "MAPPING" && (
+          <div className="card">
+            <div className="small">Mapping fixen</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button className="secondary" onClick={props.onGoMapping}>
+                Zum Mapping
+              </button>
+              {issue.dish && (
+                <button className="secondary" onClick={() => props.onGoDish(issue.dish!)}>
+                  Zum Gericht
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {issue.type === "MENGE" && issue.dish && (
+          <div className="card">
+            <div className="small">Menge fehlt</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button className="secondary" onClick={() => props.onGoDish(issue.dish!)}>
+                Zum Gericht
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ height: 8 }} />
+        <div className="small">MVP-Regel: Quick-Fix ist optional. Keine Pflicht-Loops.</div>
+      </div>
+    </div>
+  );
+}
