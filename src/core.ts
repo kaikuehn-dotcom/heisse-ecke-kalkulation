@@ -1,313 +1,1119 @@
-import * as XLSX from "xlsx";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  AppData,
+  DataIssue,
+  exportWorkbook,
+  money,
+  parseWorkbook,
+  pct,
+  recalcAll,
+  toNumber
+} from "./core";
 
-/** ===== Types ===== */
-export type InventoryItem = {
-  name: string;
-  ekRaw: number | null;      // EK wie Inventur (€/kg, €/g, €/l, €/ml, €/stk)
-  unitRaw: string | null;    // kg/g/l/ml/stk
-  ekBase: number | null;     // €/g or €/ml or €/stk
-  status: string | null;
-};
+type Tab = "UPLOAD" | "DASHBOARD" | "GERICHT" | "INVENTUR" | "MAPPING" | "HINWEISE";
 
-export type MappingRow = {
-  recipeName: string;        // Zutat im Rezept
-  suggestion: string | null; // Vorschlag Inventur-Zutat
-  correction: string | null; // Inventur-Zutat (Korrektur)
-  status: string | null;     // OK / PRÜFEN / ...
-};
+const LS_KEY = "heisse-ecke-single-outlet-state-v1";
 
-export type RecipeLine = {
-  dish: string;
-  ingredientRecipe: string;
-  qty: number | null;
-  unit: string | null;           // g/ml/stk
-  mappedInventory: string | null;
-  ekBase: number | null;
-  cost: number | null;
-  status: string | null;
-};
-
-export type DishRow = {
-  dish: string;
-  priceMaster: number | null;
-  priceMenu: number | null;
-  priceTest: number | null;
-  cogs: number | null;
-  db: number | null;
-  dbPct: number | null;
-  status: string | null;
-};
-
-export type AppData = {
-  inventory: InventoryItem[];
-  mapping: MappingRow[];
-  recipes: RecipeLine[];
-  dishes: DishRow[];
-};
-
-export type DataIssue = {
-  type: "MAPPING" | "EK" | "MENGE" | "PREIS" | "REZEPT";
-  message: string;
-  dish?: string;
-  ingredient?: string;
-  actionHint: string;
-};
-
-/** ===== Utils ===== */
-export function toNumber(x: unknown): number | null {
-  if (typeof x === "number" && Number.isFinite(x)) return x;
-  if (typeof x === "string") {
-    const s = x.trim().replace(",", ".");
-    const m = s.match(/-?\d+(?:\.\d+)?/);
-    if (!m) return null;
-    const v = Number(m[0]);
-    return Number.isFinite(v) ? v : null;
+function saveToLS(data: AppData) {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(data));
+  } catch {}
+}
+function loadFromLS(): AppData | null {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
   }
-  return null;
-}
-export function money(n: number | null): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  return new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" }).format(n);
-}
-export function pct(n: number | null): string {
-  if (n == null || !Number.isFinite(n)) return "—";
-  return new Intl.NumberFormat("de-DE", { style: "percent", maximumFractionDigits: 0 }).format(n);
-}
-function ekToBase(ekRaw: number, unitRaw: string): number {
-  const u = unitRaw.toLowerCase().trim();
-  if (u === "kg" || u === "l") return ekRaw / 1000;
-  return ekRaw; // g/ml/stk already
-}
-function pickPrice(d: DishRow): number | null {
-  return d.priceTest ?? d.priceMenu ?? d.priceMaster ?? null;
 }
 
-/** ===== Import =====
- * Erwartete Sheet-Namen aus deinem Datenpaket:
- * INVENTUR_INPUT, MAP_ZUTATEN, REZEPTE_BASIS, GERICHTE
- */
-export function parseWorkbook(file: ArrayBuffer): AppData {
-  const wb = XLSX.read(file, { type: "array" });
-
-  const inv = sheetToJSON(wb, "INVENTUR_INPUT");
-  const map = sheetToJSON(wb, "MAP_ZUTATEN");
-  const rec = sheetToJSON(wb, "REZEPTE_BASIS");
-  const dis = sheetToJSON(wb, "GERICHTE");
-
-  const inventory: InventoryItem[] = inv.map((r) => {
-    const name = String(r["Zutat"] ?? "").trim();
-    const ekRaw = toNumber(r["EK (wie Inventur)"] ?? r["EK"] ?? r["EK (wie auf Rechnung)"]);
-    const unitRaw = String(r["Einheit (Inventur)"] ?? r["Einheit"] ?? "").trim() || null;
-    let ekBase: number | null = null;
-    if (ekRaw != null && unitRaw) ekBase = ekToBase(ekRaw, unitRaw);
-    const status = String(r["STATUS"] ?? "").trim() || null;
-    return { name, ekRaw, unitRaw, ekBase, status };
-  }).filter(x => x.name);
-
-  const mapping: MappingRow[] = map.map((r) => ({
-    recipeName: String(r["Zutat im Rezept"] ?? r["Zutat (Rezept)"] ?? r["Zutat"] ?? "").trim(),
-    suggestion: String(r["Vorschlag Inventur-Zutat"] ?? r["Vorschlag"] ?? "").trim() || null,
-    correction: String(r["Inventur-Zutat (Korrektur)"] ?? r["Inventur-Zutat (falls korrigieren)"] ?? "").trim() || null,
-    status: String(r["Status"] ?? r["STATUS"] ?? "").trim() || null
-  })).filter(x => x.recipeName);
-
-  const recipes: RecipeLine[] = rec.map((r) => ({
-    dish: String(r["Gericht"] ?? "").trim(),
-    ingredientRecipe: String(r["Zutat (Rezept)"] ?? r["Zutat"] ?? "").trim(),
-    qty: toNumber(r["Menge"]),
-    unit: String(r["Einheit (g/ml/stk)"] ?? r["Einheit"] ?? "").trim() || null,
-    mappedInventory: String(r["Inventur-Zutat (gemappt)"] ?? r["Inventur-Zutat"] ?? "").trim() || null,
-    ekBase: toNumber(r["EK aus Inventur (Base)"] ?? r["EK"]),
-    cost: toNumber(r["Kosten"]),
-    status: String(r["STATUS"] ?? "").trim() || null
-  })).filter(x => x.dish && x.ingredientRecipe);
-
-  const dishes: DishRow[] = dis.map((r) => ({
-    dish: String(r["Gericht"] ?? "").trim(),
-    priceMaster: toNumber(r["Preis (Master)"]),
-    priceMenu: toNumber(r["Preis (Speisekarte)"]),
-    priceTest: toNumber(r["Preis (Test)"]),
-    cogs: toNumber(r["Wareneinsatz (aus Rezept)"] ?? r["Wareneinsatz"]),
-    db: toNumber(r["DB € (Test)"] ?? r["DB €"]),
-    dbPct: toNumber(r["DB % (Test)"] ?? r["DB %"]),
-    status: String(r["STATUS"] ?? "").trim() || null
-  })).filter(x => x.dish);
-
-  return { inventory, mapping, recipes, dishes };
+function cloneData(d: AppData): AppData {
+  return JSON.parse(JSON.stringify(d));
 }
 
-function sheetToJSON(wb: XLSX.WorkBook, name: string): Record<string, unknown>[] {
-  const ws = wb.Sheets[name];
-  if (!ws) return [];
-  return XLSX.utils.sheet_to_json(ws, { defval: "" }) as Record<string, unknown>[];
+function ensureMappingRow(data: AppData, recipeIngredient: string) {
+  const name = recipeIngredient.trim();
+  if (!name) return;
+  const exists = data.mapping.find((m) => m.recipeName === name);
+  if (exists) return;
+  data.mapping.push({
+    recipeName: name,
+    suggestion: null,
+    correction: null,
+    status: "PRÜFEN"
+  });
 }
 
-/** ===== Recalc (robust, fail-safe) ===== */
-export function recalcAll(data: AppData): { data: AppData; issues: DataIssue[] } {
-  const issues: DataIssue[] = [];
+export default function App() {
+  const [tab, setTab] = useState<Tab>("UPLOAD");
+  const [data, setData] = useState<AppData | null>(null);
+  const [issues, setIssues] = useState<DataIssue[]>([]);
+  const [selectedDish, setSelectedDish] = useState<string | null>(null);
+  const [showFix, setShowFix] = useState(false);
 
-  const invByName = new Map<string, InventoryItem>();
-  data.inventory.forEach(i => invByName.set(i.name, i));
+  // load previous state
+  useEffect(() => {
+    const saved = loadFromLS();
+    if (saved) {
+      const out = recalcAll(saved);
+      setData(out.data);
+      setIssues(out.issues);
+      setTab("DASHBOARD");
+    }
+  }, []);
 
-  const mapByRecipe = new Map<string, MappingRow>();
-  data.mapping.forEach(m => mapByRecipe.set(m.recipeName, m));
+  const recompute = (next: AppData) => {
+    const out = recalcAll(next);
+    setData(out.data);
+    setIssues(out.issues);
+    saveToLS(out.data);
+  };
 
-  // inventory -> base price
-  data.inventory.forEach(inv => {
-    if (inv.ekRaw != null && inv.unitRaw) {
-      inv.ekBase = ekToBase(inv.ekRaw, inv.unitRaw);
-      inv.status = "OK";
+  const onUpload = async (file: File) => {
+    const buf = await file.arrayBuffer();
+    const parsed = parseWorkbook(buf);
+    // safety: ensure mapping rows exist for every recipe ingredient
+    parsed.recipes.forEach((r) => ensureMappingRow(parsed, r.ingredientRecipe));
+    recompute(parsed);
+    setTab("DASHBOARD");
+  };
+
+  const doExport = () => {
+    if (!data) return;
+    const blob = exportWorkbook(data);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `HeisseEcke_Export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const clearAll = () => {
+    setData(null);
+    setIssues([]);
+    setTab("UPLOAD");
+    setSelectedDish(null);
+    try {
+      localStorage.removeItem(LS_KEY);
+    } catch {}
+  };
+
+  const nextIssue = issues[0] ?? null;
+
+  return (
+    <div className="container">
+      <div className="topbar">
+        <div className="brand">
+          <span
+            style={{
+              display: "inline-flex",
+              width: 10,
+              height: 10,
+              borderRadius: 99,
+              background: "var(--accent)"
+            }}
+          />
+          Heiße Ecke – Web-App (Single Outlet)
+        </div>
+
+        <div className="row">
+          <span className="badge">Status: {data ? "Daten geladen" : "Bitte Excel laden"}</span>
+          {data && <span className="badge">Hinweise: {issues.length}</span>}
+          {data && (
+            <button className="secondary" onClick={doExport}>
+              Excel exportieren
+            </button>
+          )}
+          {data && issues.length > 0 && (
+            <button className="primary" onClick={() => setShowFix(true)}>
+              Quick-Fix
+            </button>
+          )}
+          {data && (
+            <button className="secondary" onClick={clearAll}>
+              Zurücksetzen
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="nav">
+        <button className={tab === "UPLOAD" ? "active" : ""} onClick={() => setTab("UPLOAD")}>
+          1) Excel laden
+        </button>
+        <button className={tab === "DASHBOARD" ? "active" : ""} onClick={() => setTab("DASHBOARD")}>
+          2) Dashboard
+        </button>
+        <button className={tab === "INVENTUR" ? "active" : ""} onClick={() => setTab("INVENTUR")}>
+          3) Inventur
+        </button>
+        <button className={tab === "MAPPING" ? "active" : ""} onClick={() => setTab("MAPPING")}>
+          4) Mapping
+        </button>
+        <button className={tab === "HINWEISE" ? "active" : ""} onClick={() => setTab("HINWEISE")}>
+          Hinweise
+        </button>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      {tab === "UPLOAD" && <UploadScreen dataLoaded={!!data} onUpload={onUpload} />}
+
+      {tab === "DASHBOARD" && (
+        <DashboardScreen
+          data={data}
+          onChange={recompute}
+          onOpenDish={(name) => {
+            setSelectedDish(name);
+            setTab("GERICHT");
+          }}
+        />
+      )}
+
+      {tab === "GERICHT" && (
+        <DishScreen
+          data={data}
+          dishName={selectedDish}
+          onBack={() => setTab("DASHBOARD")}
+          onChange={recompute}
+          onGoInventur={() => setTab("INVENTUR")}
+          onGoMapping={() => setTab("MAPPING")}
+        />
+      )}
+
+      {tab === "INVENTUR" && <InventoryScreen data={data} onChange={recompute} />}
+
+      {tab === "MAPPING" && <MappingScreen data={data} onChange={recompute} />}
+
+      {tab === "HINWEISE" && (
+        <HintsScreen
+          issues={issues}
+          onJumpDish={(d) => {
+            setSelectedDish(d);
+            setTab("GERICHT");
+          }}
+        />
+      )}
+
+      {showFix && nextIssue && (
+        <QuickFixModal
+          issue={nextIssue}
+          onClose={() => setShowFix(false)}
+          onFixPrice={(dish, price) => {
+            if (!data) return;
+            const c = cloneData(data);
+            const d = c.dishes.find((x) => x.dish === dish);
+            if (d) d.priceTest = price;
+            recompute(c);
+            setShowFix(false);
+          }}
+          onFixEK={(invName, ek, unit) => {
+            if (!data) return;
+            const c = cloneData(data);
+            const i = c.inventory.find((x) => x.name === invName);
+            if (i) {
+              i.ekRaw = ek;
+              i.unitRaw = unit;
+            }
+            recompute(c);
+            setShowFix(false);
+          }}
+          onGoMapping={() => {
+            setShowFix(false);
+            setTab("MAPPING");
+          }}
+          onGoDish={(d) => {
+            setShowFix(false);
+            setSelectedDish(d);
+            setTab("GERICHT");
+          }}
+          onGoInventur={() => {
+            setShowFix(false);
+            setTab("INVENTUR");
+          }}
+        />
+      )}
+
+      <div style={{ height: 18 }} />
+      <div className="small">
+        Prinzip: nichts blockiert. Wenn Daten fehlen, siehst du „—“. Preisänderungen ändern DB sofort (Wareneinsatz
+        kommt aus dem Rezept).
+      </div>
+    </div>
+  );
+}
+
+/** ===== Screens ===== */
+
+function UploadScreen({ dataLoaded, onUpload }: { dataLoaded: boolean; onUpload: (f: File) => void }) {
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <div className="card">
+      <div className="h1">1) Excel laden</div>
+      <div className="small">
+        Lade deine Datei <b>HeisseEcke_WebApp_Datenpaket_FULL.xlsx</b> hoch. Danach ist Dashboard sofort nutzbar.
+      </div>
+      <div style={{ height: 10 }} />
+      <div className="row">
+        <input
+          type="file"
+          accept=".xlsx"
+          onChange={async (e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            setErr(null);
+            try {
+              await onUpload(f);
+            } catch (ex: any) {
+              setErr(ex?.message ?? "Konnte Datei nicht lesen.");
+            }
+          }}
+        />
+        {dataLoaded && (
+          <span className="pill">
+            <span className="dot ok" /> Datei geladen
+          </span>
+        )}
+        {err && (
+          <span className="pill">
+            <span className="dot bad" /> {err}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DashboardScreen({
+  data,
+  onChange,
+  onOpenDish
+}: {
+  data: AppData | null;
+  onChange: (d: AppData) => void;
+  onOpenDish: (dish: string) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [newDishName, setNewDishName] = useState("");
+  const [newDishPrice, setNewDishPrice] = useState("");
+
+  const rows = useMemo(() => {
+    if (!data) return [];
+    const qq = q.toLowerCase().trim();
+    return data.dishes
+      .filter((d) => (qq ? d.dish.toLowerCase().includes(qq) : true))
+      .sort((a, b) => (b.db ?? -1e9) - (a.db ?? -1e9));
+  }, [data, q]);
+
+  if (!data)
+    return (
+      <div className="card">
+        <div className="h1">Dashboard</div>
+        <div className="small">Bitte zuerst Excel laden.</div>
+      </div>
+    );
+
+  const setPrice = (dish: string, field: "priceMenu" | "priceTest", raw: string) => {
+    const v = raw.replace(",", ".").trim();
+    const num = v === "" ? null : Number(v);
+    const c = cloneData(data);
+    const d = c.dishes.find((x) => x.dish === dish);
+    if (!d) return;
+    (d as any)[field] = num;
+    onChange(c);
+  };
+
+  const addDish = () => {
+    const name = newDishName.trim();
+    if (!name) return;
+    const price = toNumber(newDishPrice);
+    const c = cloneData(data);
+    const exists = c.dishes.find((d) => d.dish.toLowerCase() === name.toLowerCase());
+    if (exists) return;
+
+    c.dishes.push({
+      dish: name,
+      priceMaster: null,
+      priceMenu: price,
+      priceTest: null,
+      cogs: null,
+      db: null,
+      dbPct: null,
+      status: "FEHLT_REZEPT"
+    });
+    onChange(c);
+    setNewDishName("");
+    setNewDishPrice("");
+  };
+
+  return (
+    <div className="card">
+      <div className="row">
+        <div>
+          <div className="h1">2) Dashboard</div>
+          <div className="small">Hier kannst du Preise direkt ändern. Klick ein Gericht für Rezept/Details.</div>
+        </div>
+        <div style={{ marginLeft: "auto" }} className="row">
+          <input
+            placeholder="Gericht suchen…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            style={{ minWidth: 260 }}
+          />
+        </div>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      <div className="card">
+        <div className="small">Neues Gericht anlegen</div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <input
+            placeholder="Gerichtname (z.B. Currywurst Dippers)"
+            value={newDishName}
+            onChange={(e) => setNewDishName(e.target.value)}
+            style={{ minWidth: 320 }}
+          />
+          <input
+            placeholder="Start-Preis (Speisekarte) optional"
+            value={newDishPrice}
+            onChange={(e) => setNewDishPrice(e.target.value)}
+            style={{ width: 220 }}
+          />
+          <button className="primary" onClick={addDish}>
+            + Gericht
+          </button>
+          <span className="small">Hinweis: Wareneinsatz kommt, sobald du Rezeptzeilen ergänzt.</span>
+        </div>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Gericht</th>
+            <th>Preis Master</th>
+            <th>Preis Speisekarte (edit)</th>
+            <th>Preis Test (edit)</th>
+            <th>Wareneinsatz</th>
+            <th>DB €</th>
+            <th>DB %</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((d) => (
+            <tr key={d.dish}>
+              <td style={{ fontWeight: 900 }}>
+                <button className="secondary" onClick={() => onOpenDish(d.dish)}>
+                  {d.dish}
+                </button>
+              </td>
+              <td>{money(d.priceMaster)}</td>
+              <td style={{ width: 180 }}>
+                <input
+                  value={d.priceMenu ?? ""}
+                  placeholder="z.B. 8,90"
+                  onChange={(e) => setPrice(d.dish, "priceMenu", e.target.value)}
+                  style={{ width: 150 }}
+                />
+              </td>
+              <td style={{ width: 160 }}>
+                <input
+                  value={d.priceTest ?? ""}
+                  placeholder="z.B. 9,50"
+                  onChange={(e) => setPrice(d.dish, "priceTest", e.target.value)}
+                  style={{ width: 130 }}
+                />
+              </td>
+              <td>{money(d.cogs)}</td>
+              <td>{money(d.db)}</td>
+              <td>{pct(d.dbPct)}</td>
+              <td>{d.status ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DishScreen({
+  data,
+  dishName,
+  onBack,
+  onChange,
+  onGoInventur,
+  onGoMapping
+}: {
+  data: AppData | null;
+  dishName: string | null;
+  onBack: () => void;
+  onChange: (d: AppData) => void;
+  onGoInventur: () => void;
+  onGoMapping: () => void;
+}) {
+  const [sold, setSold] = useState(0);
+  const [newIng, setNewIng] = useState("");
+  const [newQty, setNewQty] = useState("");
+  const [newUnit, setNewUnit] = useState<"g" | "ml" | "stk">("g");
+
+  if (!data || !dishName)
+    return (
+      <div className="card">
+        <div className="h1">Gericht</div>
+        <div className="small">Bitte zuerst Excel laden und Gericht wählen.</div>
+      </div>
+    );
+
+  const dish = data.dishes.find((d) => d.dish === dishName);
+  if (!dish)
+    return (
+      <div className="card">
+        <div className="h1">Nicht gefunden</div>
+        <button className="secondary" onClick={onBack}>
+          Zurück
+        </button>
+      </div>
+    );
+
+  const lines = data.recipes.filter((r) => r.dish === dishName);
+
+  const price = dish.priceTest ?? dish.priceMenu ?? dish.priceMaster ?? null;
+  const revToday = price && sold > 0 ? price * sold : null;
+  const cogsToday = dish.cogs && sold > 0 ? dish.cogs * sold : null;
+  const dbToday = dish.db && sold > 0 ? dish.db * sold : null;
+
+  const updateDishPrice = (field: "priceMenu" | "priceTest", raw: string) => {
+    const v = raw.replace(",", ".").trim();
+    const num = v === "" ? null : Number(v);
+    const c = cloneData(data);
+    const d = c.dishes.find((x) => x.dish === dish.dish);
+    if (!d) return;
+    (d as any)[field] = num;
+    onChange(c);
+  };
+
+  const addRecipeLine = () => {
+    const ing = newIng.trim();
+    if (!ing) return;
+    const qty = toNumber(newQty);
+    const c = cloneData(data);
+
+    // add mapping row if missing
+    ensureMappingRow(c, ing);
+
+    // add recipe line
+    c.recipes.push({
+      dish: dish.dish,
+      ingredientRecipe: ing,
+      qty: qty ?? null,
+      unit: newUnit,
+      mappedInventory: null,
+      ekBase: null,
+      cost: null,
+      status: "PRÜFEN"
+    });
+
+    onChange(c);
+    setNewIng("");
+    setNewQty("");
+    setNewUnit("g");
+  };
+
+  const deleteRecipeLine = (ingredientRecipe: string) => {
+    const c = cloneData(data);
+    const idx = c.recipes.findIndex((r) => r.dish === dish.dish && r.ingredientRecipe === ingredientRecipe);
+    if (idx >= 0) c.recipes.splice(idx, 1);
+    onChange(c);
+  };
+
+  const updateRecipeField = (ingredientRecipe: string, field: "qty" | "unit", raw: string) => {
+    const c = cloneData(data);
+    const r = c.recipes.find((x) => x.dish === dish.dish && x.ingredientRecipe === ingredientRecipe);
+    if (!r) return;
+    if (field === "qty") {
+      r.qty = raw.trim() === "" ? null : Number(raw.replace(",", "."));
     } else {
-      inv.ekBase = null;
-      inv.status = "FEHLT_EK_ODER_EINHEIT";
+      r.unit = raw || null;
     }
-  });
+    onChange(c);
+  };
 
-  // recipes -> mapping + cost
-  const recipes = data.recipes.map(r => {
-    const m = mapByRecipe.get(r.ingredientRecipe);
-    const mapped = (m?.correction?.trim()) ? m!.correction : (m?.suggestion ?? null);
-    r.mappedInventory = mapped;
+  return (
+    <div className="card">
+      <div className="row">
+        <div>
+          <div className="h1">{dish.dish}</div>
+          <div className="small">
+            Preise ändern → DB live. Rezeptzeilen ändern → Wareneinsatz & DB live.
+          </div>
+        </div>
+        <div style={{ marginLeft: "auto" }} className="row">
+          <button className="secondary" onClick={onBack}>
+            ← Dashboard
+          </button>
+          <button className="secondary" onClick={onGoInventur}>
+            Inventur
+          </button>
+          <button className="secondary" onClick={onGoMapping}>
+            Mapping
+          </button>
+        </div>
+      </div>
 
-    if (!r.qty || r.qty <= 0) {
-      r.status = "FEHLT_MENGE";
-      r.cost = null;
-      issues.push({
-        type: "MENGE",
-        dish: r.dish,
-        ingredient: r.ingredientRecipe,
-        message: `Menge fehlt: ${r.ingredientRecipe}`,
-        actionHint: "Im Gericht-Rezept die Menge eintragen."
-      });
-      return r;
-    }
+      <div style={{ height: 12 }} />
 
-    if (!mapped) {
-      r.status = "FEHLT_MAPPING";
-      r.cost = null;
-      issues.push({
-        type: "MAPPING",
-        dish: r.dish,
-        ingredient: r.ingredientRecipe,
-        message: `Zuordnung fehlt: ${r.ingredientRecipe}`,
-        actionHint: "Im Reiter „Mapping“ die Rezept-Zutat zuordnen."
-      });
-      return r;
-    }
+      <div className="card">
+        <div className="small">Preise</div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <div>
+            <div className="small">Master</div>
+            <div style={{ fontWeight: 900 }}>{money(dish.priceMaster)}</div>
+          </div>
+          <div>
+            <div className="small">Speisekarte</div>
+            <input
+              value={dish.priceMenu ?? ""}
+              placeholder="z.B. 8,90"
+              onChange={(e) => updateDishPrice("priceMenu", e.target.value)}
+              style={{ width: 160 }}
+            />
+          </div>
+          <div>
+            <div className="small">Testpreis</div>
+            <input
+              value={dish.priceTest ?? ""}
+              placeholder="z.B. 9,50"
+              onChange={(e) => updateDishPrice("priceTest", e.target.value)}
+              style={{ width: 160 }}
+            />
+          </div>
+          <span className="pill">
+            Status: <b>{dish.status ?? "—"}</b>
+          </span>
+        </div>
+      </div>
 
-    const inv = invByName.get(mapped) ?? null;
-    if (!inv || inv.ekBase == null) {
-      r.status = "FEHLT_EK";
-      r.ekBase = null;
-      r.cost = null;
-      issues.push({
-        type: "EK",
-        dish: r.dish,
-        ingredient: mapped,
-        message: `Einkaufspreis fehlt: ${mapped}`,
-        actionHint: "In „Inventur“ EK + Einheit pflegen."
-      });
-      return r;
-    }
+      <div style={{ height: 12 }} />
 
-    r.ekBase = inv.ekBase;
-    r.cost = r.qty * inv.ekBase;  // Menge wird als g/ml/stk interpretiert
-    r.status = "OK";
-    return r;
-  });
+      <div className="card">
+        <div className="small">Ergebnis pro Stück</div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <span className="badge">Wareneinsatz: {money(dish.cogs)}</span>
+          <span className="badge">DB €: {money(dish.db)}</span>
+          <span className="badge">DB %: {pct(dish.dbPct)}</span>
+        </div>
+      </div>
 
-  // dishes -> cogs + db
-  const recByDish = new Map<string, RecipeLine[]>();
-  recipes.forEach(r => {
-    const arr = recByDish.get(r.dish) ?? [];
-    arr.push(r);
-    recByDish.set(r.dish, arr);
-  });
+      <div style={{ height: 12 }} />
 
-  const dishes = data.dishes.map(d => {
-    const lines = recByDish.get(d.dish) ?? [];
-    const cogs = lines.reduce((s, x) => s + (x.cost ?? 0), 0);
-    d.cogs = cogs > 0 ? cogs : null;
+      <div className="card">
+        <div className="small">Heute verkauft (optional)</div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <input
+            type="number"
+            min={0}
+            value={sold}
+            onChange={(e) => setSold(Number(e.target.value))}
+            style={{ width: 140 }}
+          />
+          <span className="badge">Umsatz: {money(revToday)}</span>
+          <span className="badge">Wareneinsatz: {money(cogsToday)}</span>
+          <span className="badge">DB gesamt: {money(dbToday)}</span>
+        </div>
+      </div>
 
-    const price = pickPrice(d);
-    if (!price || price <= 0) {
-      d.status = "FEHLT_PREIS";
-      d.db = null; d.dbPct = null;
-      issues.push({
-        type: "PREIS",
-        dish: d.dish,
-        message: `Preis fehlt: ${d.dish}`,
-        actionHint: "Im Gericht einen Speisekarten- oder Testpreis eintragen."
-      });
-      return d;
-    }
+      <div style={{ height: 12 }} />
 
-    if (!d.cogs) {
-      d.status = "FEHLT_REZEPT";
-      d.db = null; d.dbPct = null;
-      issues.push({
-        type: "REZEPT",
-        dish: d.dish,
-        message: `Wareneinsatz fehlt (Rezept unvollständig): ${d.dish}`,
-        actionHint: "Im Gericht-Rezept fehlende Mengen/Zuordnung ergänzen."
-      });
-      return d;
-    }
+      <div className="card">
+        <div className="h1">Rezept</div>
+        <div className="small">
+          Neue Zutat hinzufügen. Falls die Zutat in der Inventur fehlt: Inventur → Zutat anlegen.
+        </div>
 
-    d.db = price - d.cogs;
-    d.dbPct = d.db / price;
-    d.status = "OK";
-    return d;
-  });
+        <div style={{ height: 10 }} />
 
-  return { data: { ...data, recipes, dishes }, issues };
+        <div className="card">
+          <div className="small">Neue Rezeptzeile</div>
+          <div className="row" style={{ marginTop: 8 }}>
+            <input
+              placeholder="Zutat im Rezept (z.B. Currywurst)"
+              value={newIng}
+              onChange={(e) => setNewIng(e.target.value)}
+              style={{ minWidth: 320 }}
+            />
+            <input
+              placeholder="Menge (z.B. 180)"
+              value={newQty}
+              onChange={(e) => setNewQty(e.target.value)}
+              style={{ width: 180 }}
+            />
+            <select value={newUnit} onChange={(e) => setNewUnit(e.target.value as any)}>
+              <option value="g">g</option>
+              <option value="ml">ml</option>
+              <option value="stk">stk</option>
+            </select>
+            <button className="primary" onClick={addRecipeLine}>
+              + Zeile
+            </button>
+          </div>
+          <div className="small" style={{ marginTop: 6 }}>
+            Mapping wird automatisch angelegt (Status PRÜFEN), falls neu.
+          </div>
+        </div>
+
+        <div style={{ height: 10 }} />
+
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Zutat</th>
+              <th>Menge</th>
+              <th>Einheit</th>
+              <th>Gemappt</th>
+              <th>Kosten</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l, idx) => (
+              <tr key={idx}>
+                <td>{l.ingredientRecipe}</td>
+                <td style={{ width: 120 }}>
+                  <input
+                    value={l.qty ?? ""}
+                    onChange={(e) => updateRecipeField(l.ingredientRecipe, "qty", e.target.value)}
+                    style={{ width: 100 }}
+                  />
+                </td>
+                <td style={{ width: 120 }}>
+                  <select
+                    value={l.unit ?? ""}
+                    onChange={(e) => updateRecipeField(l.ingredientRecipe, "unit", e.target.value)}
+                  >
+                    <option value="">—</option>
+                    <option value="g">g</option>
+                    <option value="ml">ml</option>
+                    <option value="stk">stk</option>
+                  </select>
+                </td>
+                <td>{l.mappedInventory ?? "—"}</td>
+                <td>{money(l.cost)}</td>
+                <td>{l.status ?? "—"}</td>
+                <td style={{ width: 120 }}>
+                  <button className="secondary" onClick={() => deleteRecipeLine(l.ingredientRecipe)}>
+                    Entfernen
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {lines.length === 0 && (
+              <tr>
+                <td colSpan={7} className="small">
+                  Noch keine Rezeptzeilen. Füge oben eine hinzu.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
-/** ===== Export (round-trip) ===== */
-export function exportWorkbook(data: AppData): Blob {
-  const wb = XLSX.utils.book_new();
+function InventoryScreen({ data, onChange }: { data: AppData | null; onChange: (d: AppData) => void }) {
+  const [q, setQ] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newEK, setNewEK] = useState("");
+  const [newUnit, setNewUnit] = useState("kg");
 
-  const invRows = data.inventory.map(i => ({
-    "Zutat": i.name,
-    "EK (wie Inventur)": i.ekRaw ?? "",
-    "Einheit (Inventur)": i.unitRaw ?? "",
-    "EK für App (€/g, €/ml, €/stk)": i.ekBase ?? "",
-    "STATUS": i.status ?? ""
-  }));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(invRows), "INVENTUR_INPUT");
+  if (!data)
+    return (
+      <div className="card">
+        <div className="h1">Inventur</div>
+        <div className="small">Bitte zuerst Excel laden.</div>
+      </div>
+    );
 
-  const mapRows = data.mapping.map(m => ({
-    "Zutat im Rezept": m.recipeName,
-    "Vorschlag Inventur-Zutat": m.suggestion ?? "",
-    "Inventur-Zutat (Korrektur)": m.correction ?? "",
-    "Status": m.status ?? ""
-  }));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mapRows), "MAP_ZUTATEN");
+  const rows = data.inventory
+    .filter((i) => (q ? i.name.toLowerCase().includes(q.toLowerCase()) : true))
+    .sort((a, b) => a.name.localeCompare(b.name, "de"));
 
-  const recRows = data.recipes.map(r => ({
-    "Gericht": r.dish,
-    "Zutat (Rezept)": r.ingredientRecipe,
-    "Menge": r.qty ?? "",
-    "Einheit (g/ml/stk)": r.unit ?? "",
-    "Inventur-Zutat (gemappt)": r.mappedInventory ?? "",
-    "EK aus Inventur (Base)": r.ekBase ?? "",
-    "Kosten": r.cost ?? "",
-    "STATUS": r.status ?? ""
-  }));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(recRows), "REZEPTE_BASIS");
+  const addInventory = () => {
+    const name = newName.trim();
+    if (!name) return;
+    const ek = toNumber(newEK);
+    const c = cloneData(data);
+    const exists = c.inventory.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    if (exists) return;
 
-  const dishRows = data.dishes.map(d => ({
-    "Gericht": d.dish,
-    "Preis (Master)": d.priceMaster ?? "",
-    "Preis (Speisekarte)": d.priceMenu ?? "",
-    "Preis (Test)": d.priceTest ?? "",
-    "Wareneinsatz (aus Rezept)": d.cogs ?? "",
-    "DB € (Test)": d.db ?? "",
-    "DB % (Test)": d.dbPct ?? "",
-    "STATUS": d.status ?? ""
-  }));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(dishRows), "GERICHTE");
+    c.inventory.push({
+      name,
+      ekRaw: ek ?? null,
+      unitRaw: newUnit,
+      ekBase: null,
+      status: "NEU"
+    });
 
-  const array = XLSX.write(wb, { type: "array", bookType: "xlsx" });
-  return new Blob([array], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    onChange(c);
+    setNewName("");
+    setNewEK("");
+    setNewUnit("kg");
+  };
+
+  return (
+    <div className="card">
+      <div className="row">
+        <div>
+          <div className="h1">3) Inventur</div>
+          <div className="small">EK/Einheit ändern → alles rechnet neu. Du kannst auch neue Zutaten anlegen.</div>
+        </div>
+        <div style={{ marginLeft: "auto" }} className="row">
+          <input
+            placeholder="Zutat suchen…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            style={{ minWidth: 260 }}
+          />
+        </div>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      <div className="card">
+        <div className="small">Neue Zutat anlegen</div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <input
+            placeholder="Zutatname (z.B. Cheddar Scheiben)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            style={{ minWidth: 320 }}
+          />
+          <input
+            placeholder="EK (z.B. 12,90)"
+            value={newEK}
+            onChange={(e) => setNewEK(e.target.value)}
+            style={{ width: 180 }}
+          />
+          <select value={newUnit} onChange={(e) => setNewUnit(e.target.value)}>
+            <option value="kg">kg</option>
+            <option value="g">g</option>
+            <option value="l">l</option>
+            <option value="ml">ml</option>
+            <option value="stk">stk</option>
+          </select>
+          <button className="primary" onClick={addInventory}>
+            + Zutat
+          </button>
+          <span className="small">Wenn EK/Einheit fehlen, zeigt die App das als Hinweis.</span>
+        </div>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Zutat</th>
+            <th>EK</th>
+            <th>Einheit</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((i) => (
+            <tr key={i.name}>
+              <td style={{ fontWeight: 900 }}>{i.name}</td>
+              <td style={{ width: 140 }}>
+                <input
+                  value={i.ekRaw ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(",", ".");
+                    const c = cloneData(data);
+                    const x = c.inventory.find((z) => z.name === i.name);
+                    if (x) x.ekRaw = v === "" ? null : Number(v);
+                    onChange(c);
+                  }}
+                  style={{ width: 120 }}
+                />
+              </td>
+              <td style={{ width: 140 }}>
+                <select
+                  value={i.unitRaw ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const c = cloneData(data);
+                    const x = c.inventory.find((z) => z.name === i.name);
+                    if (x) x.unitRaw = v || null;
+                    onChange(c);
+                  }}
+                >
+                  <option value="">—</option>
+                  <option value="kg">kg</option>
+                  <option value="g">g</option>
+                  <option value="l">l</option>
+                  <option value="ml">ml</option>
+                  <option value="stk">stk</option>
+                </select>
+              </td>
+              <td>{i.status ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MappingScreen({ data, onChange }: { data: AppData | null; onChange: (d: AppData) => void }) {
+  const [q, setQ] = useState("");
+  if (!data)
+    return (
+      <div className="card">
+        <div className="h1">Mapping</div>
+        <div className="small">Bitte zuerst Excel laden.</div>
+      </div>
+    );
+
+  const inventoryOptions = [...data.inventory.map((i) => i.name)].sort((a, b) => a.localeCompare(b, "de"));
+  const rows = data.mapping
+    .filter((m) => (q ? m.recipeName.toLowerCase().includes(q.toLowerCase()) : true))
+    .sort((a, b) => (a.status === "PRÜFEN" ? -1 : 1) - (b.status === "PRÜFEN" ? -1 : 1));
+
+  return (
+    <div className="card">
+      <div className="row">
+        <div>
+          <div className="h1">4) Mapping</div>
+          <div className="small">Rezept-Zutat → Inventur-Zutat. Hier machst du die Daten sauber.</div>
+        </div>
+        <div style={{ marginLeft: "auto" }} className="row">
+          <input
+            placeholder="Rezept-Zutat suchen…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            style={{ minWidth: 260 }}
+          />
+        </div>
+      </div>
+
+      <div style={{ height: 10 }} />
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Rezept-Zutat</th>
+            <th>Vorschlag</th>
+            <th>Korrektur</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((m) => (
+            <tr key={m.recipeName}>
+              <td style={{ fontWeight: 900 }}>{m.recipeName}</td>
+              <td>{m.suggestion ?? "—"}</td>
+              <td style={{ width: 360 }}>
+                <select
+                  value={m.correction ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const c = cloneData(data);
+                    const x = c.mapping.find((z) => z.recipeName === m.recipeName);
+                    if (x) x.correction = v || null;
+                    onChange(c);
+                  }}
+                  style={{ width: "100%" }}
+                >
+                  <option value="">— (Vorschlag verwenden)</option>
+                  {inventoryOptions.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td>{m.status ?? "—"}</td>
+            </tr>
+          ))}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={4} className="small">
+                Keine Mapping-Zeilen gefunden.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function HintsScreen({ issues, onJumpDish }: { issues: DataIssue[]; onJumpDish: (dish: string) => void }) {
+  return (
+    <div className="card">
+      <div className="h1">Hinweise</div>
+      <div className="small">Blockiert nichts. Zeigt nur, warum irgendwo „—“ steht.</div>
+      <div style={{ height: 10 }} />
+      {issues.length === 0 ? (
+        <span className="pill">
+          <span className="dot ok" /> Alles OK
+        </span>
+      ) : (
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Typ</th>
+              <th>Was fehlt?</th>
+              <th>So fixen</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {issues.map((x, idx) => (
+              <tr key={idx}>
+                <td>{x.type}</td>
+                <td>{x.message}</td>
+                <td className="small">{x.actionHint}</td>
+                <td style={{ width: 120 }}>{x.dish ? (
+                  <button className="secondary" onClick={() => onJumpDish(x.dish!)}>
+                    Gericht
+                  </button>
+                ) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/** ===== Minimaler Loop (nur wenn du klickst) ===== */
+function QuickFixModal(props: {
+  issue: DataIssue;
+  onClose: () => void;
+  onFixPrice: (dish: string, price: number) => void;
+  onFixEK: (invName: string, ek: number, unit: string) => void;
+  onGoMapping: () => void;
+  onGoDish: (dish: string) => void;
+  onGoInventur: () => void;
+}) {
+  const { issue } = props;
+  const [price, setPrice] = useState("");
+  const [ek, setEk] = useState("");
+  const [unit, setUnit] = useState("kg");
+
+  const title =
+    issue.type === "PREIS"
+      ? "Preis fehlt"
+      : issue.type === "EK"
+      ? "Einkaufspreis fehlt"
+      : issue.type === "MAPPING"
+      ? "Zuordnung fehlt"
+      : issue.type === "MENGE"
+      ? "Menge fehlt"
+      : "Hinweis";
+
+  return (
+    <div className="modalOverlay" onClick={props.onClose}>
+      <div className="card modal" onClick={(e) => e.stopPropagation()}>
+        <div className="row">
+          <div>
+            <div className="h1">Quick-Fix: {title}</div>
+            <div className="small">{issue.message}</div>
+          </div>
+          <button className="secondary" style={{ marginLeft: "auto" }} onClick={props.onClose}>
+            Schließen
+          </button>
+        </div>
+
+        <div style={{ height: 12 }} />
+
+        {issue.type === "PREIS" && issue.dish && (
+          <div className="card">
+            <div className="small">Testpreis setzen (sofortige Simulation)</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="z.B. 8,90" style={{ width: 180 }} />
+              <button
+                className="primary"
+                onClick={() => {
+                  const n = toNumber(price);
+                  if (n != null) props.onFixPrice(issue.dish!, n);
+                }}
+              >
+                Speichern
+              </button>
+              <button className="secondary" onClick={() => props.onGoDish(issue.dish!)}>
+                Zum Gericht
+              </button>
+            </div>
+          </div>
+        )}
+
+        {issue.type === "EK" && issue.ingredient && (
+          <div className="card">
+            <div className="small">Einkaufspreis + Einheit</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <input value={ek} onChange={(e) => setEk(e.target.value)} placeholder="z.B. 6,20" style={{ width: 180 }} />
+              <select value={unit} onChange={(e) => setUnit(e.target.value)}>
+                <option value="kg">kg</option>
+                <option value="g">g</option>
+                <option value="l">l</option>
+                <option value="ml">ml</option>
+                <option value="stk">stk</option>
+              </select>
+              <button
+                className="primary"
+                onClick={() => {
+                  const n = toNumber(ek);
+                  if (n != null) props.onFixEK(issue.ingredient!, n, unit);
+                }}
+              >
+                Speichern
+              </button>
+              <button className="secondary" onClick={props.onGoInventur}>
+                Zur Inventur
+              </button>
+            </div>
+          </div>
+        )}
+
+        {issue.type === "MAPPING" && (
+          <div className="card">
+            <div className="small">Mapping fixen</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button className="secondary" onClick={props.onGoMapping}>
+                Zum Mapping
+              </button>
+              {issue.dish && (
+                <button className="secondary" onClick={() => props.onGoDish(issue.dish!)}>
+                  Zum Gericht
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {issue.type === "MENGE" && issue.dish && (
+          <div className="card">
+            <div className="small">Menge fehlt</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button className="secondary" onClick={() => props.onGoDish(issue.dish!)}>
+                Zum Gericht
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ height: 8 }} />
+        <div className="small">MVP-Regel: Quick-Fix ist optional. Keine Pflicht-Loops.</div>
+      </div>
+    </div>
+  );
 }
