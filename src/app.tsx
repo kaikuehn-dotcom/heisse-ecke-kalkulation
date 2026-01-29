@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import type { AppData, MappingRow } from "./core";
+import type { AppData } from "./core";
 import { parseWorkbook, recalcAll, exportWorkbook, money, pct } from "./core";
 
 type Tab = "UPLOAD" | "INVENTUR" | "MAPPING" | "GERICHTE";
@@ -36,22 +36,20 @@ export default function App() {
     try {
       setError(null);
 
-      // Quick sanity
-      if (!file.name.toLowerCase().endsWith(".xlsx") && !file.name.toLowerCase().endsWith(".xls")) {
-        throw new Error("Bitte eine Excel-Datei (.xlsx/.xls) hochladen.");
-      }
-
+      // ✅ Dateiname/Endung ist egal. Wir versuchen einfach zu lesen.
       const buf = await file.arrayBuffer();
       const parsed = parseWorkbook(buf);
 
-      // Recalc
       setRawParsed(parsed);
       safeSetAll(parsed);
 
-      // Jump to Mapping so you can fix wrong assignments fast
+      // Direkt in Zuordnung springen (da fallen Fehler sofort auf)
       setTab("MAPPING");
     } catch (e: any) {
-      setError(e?.message ?? "Unbekannter Fehler beim Einlesen.");
+      const msg =
+        e?.message ||
+        "Konnte die Datei nicht einlesen. Bitte sicherstellen, dass es eine echte Excel-Datei ist.";
+      setError(msg);
       setRawParsed(null);
       setData(null);
       setIssues([]);
@@ -75,6 +73,7 @@ export default function App() {
     if (!data) return;
 
     const next: AppData = JSON.parse(JSON.stringify(data));
+
     // Update mapping table
     const m = next.mapping.find((x) => x.recipeName === recipeName);
     if (m) {
@@ -82,7 +81,7 @@ export default function App() {
       m.status = inventoryName ? "OK" : "PRÜFEN";
     }
 
-    // Push correction into recipe lines (so recalcAll will use it without changing core.ts)
+    // Push correction into recipe lines
     for (const r of next.recipes) {
       if (r.ingredientRecipe === recipeName) {
         r.inventoryItemSelected = inventoryName;
@@ -151,7 +150,7 @@ export default function App() {
           background: disabled ? "#d0d5dd" : bg,
           color: disabled ? "#667085" : color,
           cursor: disabled ? "not-allowed" : "pointer",
-          fontWeight: 700,
+          fontWeight: 800,
         }}
       >
         {children}
@@ -168,7 +167,7 @@ export default function App() {
         border: tab === id ? "2px solid #1f4e79" : "1px solid #d0d5dd",
         background: tab === id ? "#eef4ff" : "#fff",
         cursor: "pointer",
-        fontWeight: 800,
+        fontWeight: 900,
       }}
     >
       {label}
@@ -204,8 +203,8 @@ export default function App() {
     <div style={{ fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial", padding: 18, maxWidth: 1200, margin: "0 auto" }}>
       <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontSize: 22, fontWeight: 900 }}>Heiße Ecke – Kalkulation (Single Outlet)</div>
-          <div style={{ color: "#667085", fontWeight: 600 }}>Upload → Daten prüfen → Mapping fixen → WE/DB sauber sehen</div>
+          <div style={{ fontSize: 22, fontWeight: 950 }}>Heiße Ecke – Kalkulation (Single Outlet)</div>
+          <div style={{ color: "#667085", fontWeight: 650 }}>Upload → Zuordnung → Wareneinsatz/DB</div>
         </div>
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -217,7 +216,7 @@ export default function App() {
             Export Excel
           </Button>
           <Button tone="danger" onClick={resetToOriginal} disabled={!rawParsed}>
-            Reset auf Original
+            Reset
           </Button>
         </div>
       </header>
@@ -225,24 +224,24 @@ export default function App() {
       {/* KPIs */}
       <section style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 10 }}>
         <div style={{ padding: 12, border: "1px solid #d0d5dd", borderRadius: 12 }}>
-          <div style={{ color: "#667085", fontWeight: 700 }}>Inventur</div>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>{kpi.invCount}</div>
+          <div style={{ color: "#667085", fontWeight: 800 }}>Inventur</div>
+          <div style={{ fontSize: 18, fontWeight: 950 }}>{kpi.invCount}</div>
           <div style={{ marginTop: 6 }}>
             {kpi.invIssues === 0 ? <Badge text="OK" tone="ok" /> : <Badge text={`${kpi.invIssues} Probleme`} tone="bad" />}
           </div>
         </div>
 
         <div style={{ padding: 12, border: "1px solid #d0d5dd", borderRadius: 12 }}>
-          <div style={{ color: "#667085", fontWeight: 700 }}>Rezeptzeilen</div>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>{kpi.recipeCount}</div>
+          <div style={{ color: "#667085", fontWeight: 800 }}>Rezeptzeilen</div>
+          <div style={{ fontSize: 18, fontWeight: 950 }}>{kpi.recipeCount}</div>
           <div style={{ marginTop: 6 }}>
             {kpi.recipeIssues === 0 ? <Badge text="OK" tone="ok" /> : <Badge text={`${kpi.recipeIssues} Probleme`} tone="bad" />}
           </div>
         </div>
 
         <div style={{ padding: 12, border: "1px solid #d0d5dd", borderRadius: 12 }}>
-          <div style={{ color: "#667085", fontWeight: 700 }}>Gerichte</div>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>{kpi.dishCount}</div>
+          <div style={{ color: "#667085", fontWeight: 800 }}>Gerichte</div>
+          <div style={{ fontSize: 18, fontWeight: 950 }}>{kpi.dishCount}</div>
           <div style={{ marginTop: 6 }}>
             {kpi.dishIssues === 0 ? <Badge text="OK" tone="ok" /> : <Badge text={`${kpi.dishIssues} Probleme`} tone="bad" />}
           </div>
@@ -251,52 +250,44 @@ export default function App() {
         <div style={{ gridColumn: "span 3", padding: 12, border: "1px solid #d0d5dd", borderRadius: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <div>
-              <div style={{ color: "#667085", fontWeight: 800 }}>Letzte Fehlermeldung</div>
-              <div style={{ marginTop: 4, fontWeight: 700 }}>
+              <div style={{ color: "#667085", fontWeight: 900 }}>Fehler</div>
+              <div style={{ marginTop: 4, fontWeight: 800 }}>
                 {error ? <span style={{ color: "#b42318" }}>{error}</span> : <span style={{ color: "#12b76a" }}>—</span>}
               </div>
             </div>
 
             <div style={{ maxWidth: 520 }}>
-              <div style={{ color: "#667085", fontWeight: 800 }}>Hinweis</div>
-              <div style={{ marginTop: 4, color: "#344054", fontWeight: 600 }}>
-                Wenn WE “1500€” zeigt, fehlt fast immer <b>Ziel-Einheit</b> oder <b>Packungsinhalt</b> in der Inventur.
-                Dann wird pro Packung statt pro g/ml gerechnet.
+              <div style={{ color: "#667085", fontWeight: 900 }}>Hinweis</div>
+              <div style={{ marginTop: 4, color: "#344054", fontWeight: 650 }}>
+                Datei-Namen sind egal. Wichtig ist nur: Excel muss ein echtes Excel sein und die Tabs müssen passen (z.B. 01_INVENTUR + Gericht-Tabs).
               </div>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Issues list (compact) */}
       {issues.length > 0 && (
         <section style={{ marginTop: 12, padding: 12, border: "1px solid #fecaca", borderRadius: 12, background: "#fff5f5" }}>
-          <div style={{ fontWeight: 900, color: "#b42318" }}>Probleme (Auszug):</div>
+          <div style={{ fontWeight: 950, color: "#b42318" }}>Probleme (Auszug):</div>
           <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 18 }}>
             {issues.slice(0, 8).map((x, idx) => (
-              <li key={idx} style={{ color: "#7a271a", fontWeight: 650 }}>{x}</li>
+              <li key={idx} style={{ color: "#7a271a", fontWeight: 700 }}>{x}</li>
             ))}
           </ul>
         </section>
       )}
 
-      {/* TABS */}
       <main style={{ marginTop: 16 }}>
         {tab === "UPLOAD" && (
           <section style={{ padding: 14, border: "1px solid #d0d5dd", borderRadius: 12 }}>
-            <div style={{ fontWeight: 900, fontSize: 18 }}>1) Excel hochladen</div>
+            <div style={{ fontWeight: 950, fontSize: 18 }}>1) Upload</div>
             <div style={{ color: "#667085", fontWeight: 650, marginTop: 6 }}>
-              Unterstützt zwei Formate:
-              <div style={{ marginTop: 6 }}>
-                • <b>NEU (menschlich)</b>: <code>01_INVENTUR</code> + Tabs pro Gericht<br />
-                • <b>ALT</b>: <code>INVENTUR_INPUT</code>, <code>REZEPTE_BASIS</code>, <code>GERICHTE</code>
-              </div>
+              Du kannst die Datei nennen wie du willst. Endung/Name ist egal.
             </div>
 
             <div style={{ marginTop: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
               <input
                 type="file"
-                accept=".xlsx,.xls"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
                   if (f) onUpload(f);
@@ -311,15 +302,7 @@ export default function App() {
 
         {tab === "INVENTUR" && (
           <section style={{ padding: 14, border: "1px solid #d0d5dd", borderRadius: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 18 }}>2) Inventur</div>
-                <div style={{ color: "#667085", fontWeight: 650, marginTop: 6 }}>
-                  Hier siehst du, ob Ziel-Einheit / Packungsinhalt fehlen (das erzeugt Horrorwerte).
-                </div>
-              </div>
-            </div>
-
+            <div style={{ fontWeight: 950, fontSize: 18 }}>2) Inventur</div>
             {!data ? (
               <div style={{ marginTop: 12, color: "#667085", fontWeight: 700 }}>Bitte erst eine Excel hochladen.</div>
             ) : (
@@ -352,10 +335,6 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
-
-                <div style={{ marginTop: 10, color: "#667085", fontWeight: 650 }}>
-                  Anzeige ist auf 300 Zeilen begrenzt (Performance). Export zeigt alles.
-                </div>
               </div>
             )}
           </section>
@@ -365,29 +344,24 @@ export default function App() {
           <section style={{ padding: 14, border: "1px solid #d0d5dd", borderRadius: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
               <div>
-                <div style={{ fontWeight: 900, fontSize: 18 }}>3) Zuordnung (Rezept-Zutat → Inventur-Artikel)</div>
+                <div style={{ fontWeight: 950, fontSize: 18 }}>3) Zuordnung</div>
                 <div style={{ color: "#667085", fontWeight: 650, marginTop: 6 }}>
-                  Genau hier fixst du falsche Zuordnungen. Sobald du auswählst, rechnet WE/DB sofort neu.
+                  Auswahl speichern → WE/DB rechnen sofort neu.
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <input
-                  placeholder="Suche Zutat…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 10,
-                    border: "1px solid #d0d5dd",
-                    minWidth: 240,
-                    fontWeight: 700,
-                  }}
-                />
-                <Button tone="ghost" onClick={() => setTab("GERICHTE")} disabled={!data}>
-                  Weiter zu Gerichten
-                </Button>
-              </div>
+              <input
+                placeholder="Suche Zutat…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid #d0d5dd",
+                  minWidth: 240,
+                  fontWeight: 800,
+                }}
+              />
             </div>
 
             {!data ? (
@@ -429,7 +403,7 @@ export default function App() {
                                   padding: "8px 10px",
                                   borderRadius: 10,
                                   border: "1px solid #d0d5dd",
-                                  fontWeight: 700,
+                                  fontWeight: 800,
                                 }}
                               >
                                 <option value="">— auswählen —</option>
@@ -448,10 +422,6 @@ export default function App() {
                       })}
                   </tbody>
                 </table>
-
-                <div style={{ marginTop: 10, color: "#667085", fontWeight: 650 }}>
-                  Anzeige ist auf 400 Zeilen begrenzt. Nutze Suche.
-                </div>
               </div>
             )}
           </section>
@@ -461,29 +431,21 @@ export default function App() {
           <section style={{ padding: 14, border: "1px solid #d0d5dd", borderRadius: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
               <div>
-                <div style={{ fontWeight: 900, fontSize: 18 }}>4) Gerichte – Wareneinsatz & DB</div>
-                <div style={{ color: "#667085", fontWeight: 650, marginTop: 6 }}>
-                  Wenn hier noch Horrorwerte stehen, ist fast immer Inventur-Ziel-Einheit/Packungsinhalt nicht gepflegt.
-                </div>
+                <div style={{ fontWeight: 950, fontSize: 18 }}>4) Gerichte</div>
               </div>
 
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <input
-                  placeholder="Suche Gericht…"
-                  value={dishSearch}
-                  onChange={(e) => setDishSearch(e.target.value)}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 10,
-                    border: "1px solid #d0d5dd",
-                    minWidth: 240,
-                    fontWeight: 700,
-                  }}
-                />
-                <Button tone="ghost" onClick={() => setTab("INVENTUR")} disabled={!data}>
-                  Zurück zur Inventur
-                </Button>
-              </div>
+              <input
+                placeholder="Suche Gericht…"
+                value={dishSearch}
+                onChange={(e) => setDishSearch(e.target.value)}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: "1px solid #d0d5dd",
+                  minWidth: 240,
+                  fontWeight: 800,
+                }}
+              />
             </div>
 
             {!data ? (
@@ -497,8 +459,8 @@ export default function App() {
                       <th style={th}>Preis (Master)</th>
                       <th style={th}>Preis (Menü)</th>
                       <th style={th}>Preis (Test)</th>
-                      <th style={th}>WE / Einheit</th>
-                      <th style={th}>DB / Einheit</th>
+                      <th style={th}>WE</th>
+                      <th style={th}>DB</th>
                       <th style={th}>DB %</th>
                       <th style={th}>Status</th>
                     </tr>
@@ -513,9 +475,7 @@ export default function App() {
                         <td style={td}>{d.cogs === null ? "—" : money(d.cogs)}</td>
                         <td style={td}>{d.db === null ? "—" : money(d.db)}</td>
                         <td style={td}>{d.dbPct === null ? "—" : pct(d.dbPct)}</td>
-                        <td style={td}>
-                          {d.status ? <Badge text={d.status} tone="bad" /> : <Badge text="OK" tone="ok" />}
-                        </td>
+                        <td style={td}>{d.status ? <Badge text={d.status} tone="bad" /> : <Badge text="OK" tone="ok" />}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -529,12 +489,11 @@ export default function App() {
   );
 }
 
-/** Simple table styles */
 const th: React.CSSProperties = {
   textAlign: "left",
   padding: "10px 10px",
   borderBottom: "1px solid #eaecf0",
-  fontWeight: 900,
+  fontWeight: 950,
   color: "#344054",
   whiteSpace: "nowrap",
 };
@@ -549,5 +508,5 @@ const td: React.CSSProperties = {
 
 const tdStrong: React.CSSProperties = {
   ...td,
-  fontWeight: 900,
+  fontWeight: 950,
 };
