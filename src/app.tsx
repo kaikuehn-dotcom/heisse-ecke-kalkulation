@@ -1,579 +1,553 @@
-import React, { useEffect, useMemo, useState } from "react";
-import {
-  AppData,
-  exportWorkbook,
-  money,
-  parseWorkbook,
-  pct,
-  recalcAll,
-  toNumber
-} from "./core";
+import React, { useMemo, useState } from "react";
+import type { AppData, MappingRow } from "./core";
+import { parseWorkbook, recalcAll, exportWorkbook, money, pct } from "./core";
 
-type Tab = "UPLOAD" | "DASHBOARD" | "DISH" | "INVENTORY" | "MAPPING";
-
-const LS_KEY = "heisse-ecke-mvp-single-outlet-v3";
-
-function clone<T>(x: T): T {
-  return JSON.parse(JSON.stringify(x));
-}
-
-function lsSave(data: AppData) {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(data));
-  } catch {}
-}
-function lsLoad(): AppData | null {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-function lsClear() {
-  try {
-    localStorage.removeItem(LS_KEY);
-  } catch {}
-}
-
-function ensureMappingRow(data: AppData, recipeName: string) {
-  const key = (recipeName ?? "").trim();
-  if (!key) return;
-  if (data.mapping.some((m) => m.recipeName === key)) return;
-  data.mapping.push({ recipeName: key, suggestion: null, correction: null, status: "PRÜFEN" });
-}
+type Tab = "UPLOAD" | "INVENTUR" | "MAPPING" | "GERICHTE";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("UPLOAD");
+  const [rawParsed, setRawParsed] = useState<AppData | null>(null);
   const [data, setData] = useState<AppData | null>(null);
-  const [issuesCount, setIssuesCount] = useState<number>(0);
-  const [dish, setDish] = useState<string | null>(null);
+  const [issues, setIssues] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
   const [search, setSearch] = useState("");
+  const [dishSearch, setDishSearch] = useState("");
 
-  const recompute = (next: AppData) => {
-    next.recipes.forEach((r) => ensureMappingRow(next, r.ingredientRecipe));
-    const out = recalcAll(next);
-    setData(out.data);
-    setIssuesCount(out.issues.length);
-    lsSave(out.data);
-  };
+  const invNames = useMemo(() => {
+    if (!data) return [];
+    return data.inventory.map((x) => x.name).filter(Boolean);
+  }, [data]);
 
-  useEffect(() => {
-    const saved = lsLoad();
-    if (saved) {
-      const out = recalcAll(saved);
-      setData(out.data);
-      setIssuesCount(out.issues.length);
-      setTab("DASHBOARD");
+  const dishRows = useMemo(() => {
+    if (!data) return [];
+    const s = dishSearch.trim().toLowerCase();
+    if (!s) return data.dishes;
+    return data.dishes.filter((d) => d.dish.toLowerCase().includes(s));
+  }, [data, dishSearch]);
+
+  function safeSetAll(next: AppData) {
+    const { data: recalced, issues: recalcedIssues } = recalcAll(next);
+    setData(recalced);
+    setIssues(recalcedIssues);
+  }
+
+  async function onUpload(file: File) {
+    try {
+      setError(null);
+
+      // Quick sanity
+      if (!file.name.toLowerCase().endsWith(".xlsx") && !file.name.toLowerCase().endsWith(".xls")) {
+        throw new Error("Bitte eine Excel-Datei (.xlsx/.xls) hochladen.");
+      }
+
+      const buf = await file.arrayBuffer();
+      const parsed = parseWorkbook(buf);
+
+      // Recalc
+      setRawParsed(parsed);
+      safeSetAll(parsed);
+
+      // Jump to Mapping so you can fix wrong assignments fast
+      setTab("MAPPING");
+    } catch (e: any) {
+      setError(e?.message ?? "Unbekannter Fehler beim Einlesen.");
+      setRawParsed(null);
+      setData(null);
+      setIssues([]);
+      setTab("UPLOAD");
     }
-  }, []);
+  }
 
-  const upload = async (file: File) => {
-    const buf = await file.arrayBuffer();
-    const parsed = parseWorkbook(buf);
-    recompute(parsed);
-    setTab("DASHBOARD");
-  };
-
-  const reset = () => {
-    lsClear();
-    setData(null);
-    setIssuesCount(0);
-    setDish(null);
-    setTab("UPLOAD");
-  };
-
-  const exportXlsx = () => {
+  function downloadExport() {
     if (!data) return;
     const blob = exportWorkbook(data);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `HeisseEcke_Export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = "HeisseEcke_Export.xlsx";
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  /** Apply mapping correction (ingredient -> inventory article) to all recipe lines of that ingredient */
+  function applyMapping(recipeName: string, inventoryName: string | null) {
+    if (!data) return;
+
+    const next: AppData = JSON.parse(JSON.stringify(data));
+    // Update mapping table
+    const m = next.mapping.find((x) => x.recipeName === recipeName);
+    if (m) {
+      m.correction = inventoryName;
+      m.status = inventoryName ? "OK" : "PRÜFEN";
+    }
+
+    // Push correction into recipe lines (so recalcAll will use it without changing core.ts)
+    for (const r of next.recipes) {
+      if (r.ingredientRecipe === recipeName) {
+        r.inventoryItemSelected = inventoryName;
+      }
+    }
+
+    safeSetAll(next);
+  }
+
+  function resetToOriginal() {
+    if (!rawParsed) return;
+    safeSetAll(rawParsed);
+    setTab("MAPPING");
+  }
+
+  /** UI helpers */
+  const Badge = ({ text, tone }: { text: string; tone: "ok" | "warn" | "bad" }) => {
+    const bg =
+      tone === "ok" ? "#e7f7ea" : tone === "warn" ? "#fff4e5" : "#fde7ea";
+    const bd =
+      tone === "ok" ? "#7fd18a" : tone === "warn" ? "#f0b35a" : "#e57a85";
+    return (
+      <span
+        style={{
+          display: "inline-block",
+          padding: "2px 8px",
+          borderRadius: 999,
+          background: bg,
+          border: `1px solid ${bd}`,
+          fontSize: 12,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {text}
+      </span>
+    );
   };
 
-  const dishes = useMemo(() => {
-    if (!data) return [];
-    const q = search.trim().toLowerCase();
-    return data.dishes
-      .filter((d) => (q ? d.dish.toLowerCase().includes(q) : true))
-      .sort((a, b) => (b.db ?? -1e9) - (a.db ?? -1e9));
-  }, [data, search]);
+  const Button = ({
+    children,
+    onClick,
+    disabled,
+    tone = "primary",
+  }: {
+    children: React.ReactNode;
+    onClick?: () => void;
+    disabled?: boolean;
+    tone?: "primary" | "ghost" | "danger";
+  }) => {
+    const bg =
+      tone === "primary"
+        ? "#1f4e79"
+        : tone === "danger"
+        ? "#b42318"
+        : "transparent";
+    const color = tone === "ghost" ? "#1f4e79" : "#fff";
+    const border = tone === "ghost" ? "1px solid #1f4e79" : "1px solid transparent";
+    return (
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        style={{
+          padding: "10px 12px",
+          borderRadius: 10,
+          border,
+          background: disabled ? "#d0d5dd" : bg,
+          color: disabled ? "#667085" : color,
+          cursor: disabled ? "not-allowed" : "pointer",
+          fontWeight: 700,
+        }}
+      >
+        {children}
+      </button>
+    );
+  };
+
+  const TabBtn = ({ id, label }: { id: Tab; label: string }) => (
+    <button
+      onClick={() => setTab(id)}
+      style={{
+        padding: "10px 12px",
+        borderRadius: 10,
+        border: tab === id ? "2px solid #1f4e79" : "1px solid #d0d5dd",
+        background: tab === id ? "#eef4ff" : "#fff",
+        cursor: "pointer",
+        fontWeight: 800,
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  /** Derived KPIs */
+  const kpi = useMemo(() => {
+    if (!data) {
+      return {
+        invCount: 0,
+        recipeCount: 0,
+        dishCount: 0,
+        invIssues: 0,
+        recipeIssues: 0,
+        dishIssues: 0,
+      };
+    }
+    const invIssues = data.inventory.filter((i) => i.status && i.status.trim().length > 0).length;
+    const recipeIssues = data.recipes.filter((r) => r.status && r.status.trim().length > 0).length;
+    const dishIssues = data.dishes.filter((d) => d.status && d.status.trim().length > 0).length;
+    return {
+      invCount: data.inventory.length,
+      recipeCount: data.recipes.length,
+      dishCount: data.dishes.length,
+      invIssues,
+      recipeIssues,
+      dishIssues,
+    };
+  }, [data]);
 
   return (
-    <div className="container">
-      <div className="topbar">
-        <div className="brand">Heiße Ecke – MVP</div>
-        <div className="row">
-          <span className="badge">Status: {data ? "geladen" : "leer"}</span>
-          {data && <span className="badge">Hinweise: {issuesCount}</span>}
-          {data && (
-            <button className="secondary" onClick={exportXlsx}>
-              Excel exportieren
-            </button>
-          )}
-          <button className="secondary" onClick={reset}>
-            Zurücksetzen
-          </button>
+    <div style={{ fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial", padding: 18, maxWidth: 1200, margin: "0 auto" }}>
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 900 }}>Heiße Ecke – Kalkulation (Single Outlet)</div>
+          <div style={{ color: "#667085", fontWeight: 600 }}>Upload → Daten prüfen → Mapping fixen → WE/DB sauber sehen</div>
         </div>
-      </div>
 
-      <div className="nav">
-        <button className={tab === "UPLOAD" ? "active" : ""} onClick={() => setTab("UPLOAD")}>
-          Excel laden
-        </button>
-        <button className={tab === "DASHBOARD" ? "active" : ""} onClick={() => setTab("DASHBOARD")}>
-          Dashboard
-        </button>
-        <button className={tab === "DISH" ? "active" : ""} onClick={() => setTab("DISH")} disabled={!dish}>
-          Gericht
-        </button>
-        <button className={tab === "INVENTORY" ? "active" : ""} onClick={() => setTab("INVENTORY")}>
-          Inventur
-        </button>
-        <button className={tab === "MAPPING" ? "active" : ""} onClick={() => setTab("MAPPING")}>
-          Mapping
-        </button>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      {tab === "UPLOAD" && (
-        <div className="card">
-          <div className="h1">Excel laden</div>
-          <div className="small">Lade deine Datei (Datenpaket_FULL.xlsx) hoch.</div>
-          <div style={{ height: 10 }} />
-          <input
-            type="file"
-            accept=".xlsx"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) upload(f);
-            }}
-          />
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <TabBtn id="UPLOAD" label="1) Upload" />
+          <TabBtn id="INVENTUR" label="2) Inventur" />
+          <TabBtn id="MAPPING" label="3) Zuordnung" />
+          <TabBtn id="GERICHTE" label="4) Gerichte" />
+          <Button tone="ghost" onClick={downloadExport} disabled={!data}>
+            Export Excel
+          </Button>
+          <Button tone="danger" onClick={resetToOriginal} disabled={!rawParsed}>
+            Reset auf Original
+          </Button>
         </div>
-      )}
+      </header>
 
-      {tab === "DASHBOARD" && (
-        <div className="card">
-          <div className="row">
+      {/* KPIs */}
+      <section style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 10 }}>
+        <div style={{ padding: 12, border: "1px solid #d0d5dd", borderRadius: 12 }}>
+          <div style={{ color: "#667085", fontWeight: 700 }}>Inventur</div>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{kpi.invCount}</div>
+          <div style={{ marginTop: 6 }}>
+            {kpi.invIssues === 0 ? <Badge text="OK" tone="ok" /> : <Badge text={`${kpi.invIssues} Probleme`} tone="bad" />}
+          </div>
+        </div>
+
+        <div style={{ padding: 12, border: "1px solid #d0d5dd", borderRadius: 12 }}>
+          <div style={{ color: "#667085", fontWeight: 700 }}>Rezeptzeilen</div>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{kpi.recipeCount}</div>
+          <div style={{ marginTop: 6 }}>
+            {kpi.recipeIssues === 0 ? <Badge text="OK" tone="ok" /> : <Badge text={`${kpi.recipeIssues} Probleme`} tone="bad" />}
+          </div>
+        </div>
+
+        <div style={{ padding: 12, border: "1px solid #d0d5dd", borderRadius: 12 }}>
+          <div style={{ color: "#667085", fontWeight: 700 }}>Gerichte</div>
+          <div style={{ fontSize: 18, fontWeight: 900 }}>{kpi.dishCount}</div>
+          <div style={{ marginTop: 6 }}>
+            {kpi.dishIssues === 0 ? <Badge text="OK" tone="ok" /> : <Badge text={`${kpi.dishIssues} Probleme`} tone="bad" />}
+          </div>
+        </div>
+
+        <div style={{ gridColumn: "span 3", padding: 12, border: "1px solid #d0d5dd", borderRadius: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <div>
-              <div className="h1">Dashboard</div>
-              <div className="small">Preise editieren, DB live.</div>
+              <div style={{ color: "#667085", fontWeight: 800 }}>Letzte Fehlermeldung</div>
+              <div style={{ marginTop: 4, fontWeight: 700 }}>
+                {error ? <span style={{ color: "#b42318" }}>{error}</span> : <span style={{ color: "#12b76a" }}>—</span>}
+              </div>
             </div>
-            <div style={{ marginLeft: "auto" }} className="row">
-              <input
-                placeholder="Gericht suchen…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                style={{ minWidth: 240 }}
-              />
+
+            <div style={{ maxWidth: 520 }}>
+              <div style={{ color: "#667085", fontWeight: 800 }}>Hinweis</div>
+              <div style={{ marginTop: 4, color: "#344054", fontWeight: 600 }}>
+                Wenn WE “1500€” zeigt, fehlt fast immer <b>Ziel-Einheit</b> oder <b>Packungsinhalt</b> in der Inventur.
+                Dann wird pro Packung statt pro g/ml gerechnet.
+              </div>
             </div>
           </div>
+        </div>
+      </section>
 
-          {!data ? (
-            <div className="small" style={{ marginTop: 10 }}>
-              Bitte zuerst Excel laden.
+      {/* Issues list (compact) */}
+      {issues.length > 0 && (
+        <section style={{ marginTop: 12, padding: 12, border: "1px solid #fecaca", borderRadius: 12, background: "#fff5f5" }}>
+          <div style={{ fontWeight: 900, color: "#b42318" }}>Probleme (Auszug):</div>
+          <ul style={{ marginTop: 8, marginBottom: 0, paddingLeft: 18 }}>
+            {issues.slice(0, 8).map((x, idx) => (
+              <li key={idx} style={{ color: "#7a271a", fontWeight: 650 }}>{x}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* TABS */}
+      <main style={{ marginTop: 16 }}>
+        {tab === "UPLOAD" && (
+          <section style={{ padding: 14, border: "1px solid #d0d5dd", borderRadius: 12 }}>
+            <div style={{ fontWeight: 900, fontSize: 18 }}>1) Excel hochladen</div>
+            <div style={{ color: "#667085", fontWeight: 650, marginTop: 6 }}>
+              Unterstützt zwei Formate:
+              <div style={{ marginTop: 6 }}>
+                • <b>NEU (menschlich)</b>: <code>01_INVENTUR</code> + Tabs pro Gericht<br />
+                • <b>ALT</b>: <code>INVENTUR_INPUT</code>, <code>REZEPTE_BASIS</code>, <code>GERICHTE</code>
+              </div>
             </div>
-          ) : (
-            <table className="table" style={{ marginTop: 12 }}>
-              <thead>
-                <tr>
-                  <th>Gericht</th>
-                  <th>Preis Menü</th>
-                  <th>Preis Test</th>
-                  <th>Wareneinsatz</th>
-                  <th>DB €</th>
-                  <th>DB %</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dishes.map((d) => (
-                  <tr key={d.dish}>
-                    <td style={{ fontWeight: 800 }}>
-                      <button
-                        className="secondary"
-                        onClick={() => {
-                          setDish(d.dish);
-                          setTab("DISH");
-                        }}
-                      >
-                        {d.dish}
-                      </button>
-                    </td>
-                    <td style={{ width: 150 }}>
-                      <input
-                        value={d.priceMenu ?? ""}
-                        placeholder="8,90"
-                        onChange={(e) => {
-                          const c = clone(data);
-                          const x = c.dishes.find((z) => z.dish === d.dish);
-                          if (x) x.priceMenu = e.target.value.trim() ? Number(e.target.value.replace(",", ".")) : null;
-                          recompute(c);
-                        }}
-                        style={{ width: 120 }}
-                      />
-                    </td>
-                    <td style={{ width: 150 }}>
-                      <input
-                        value={d.priceTest ?? ""}
-                        placeholder="9,50"
-                        onChange={(e) => {
-                          const c = clone(data);
-                          const x = c.dishes.find((z) => z.dish === d.dish);
-                          if (x) x.priceTest = e.target.value.trim() ? Number(e.target.value.replace(",", ".")) : null;
-                          recompute(c);
-                        }}
-                        style={{ width: 120 }}
-                      />
-                    </td>
-                    <td>{money(d.cogs)}</td>
-                    <td>{money(d.db)}</td>
-                    <td>{pct(d.dbPct)}</td>
-                    <td>{d.status ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
 
-      {tab === "DISH" && (
-        <DishView
-          data={data}
-          dish={dish}
-          onChange={recompute}
-          onGoMapping={() => setTab("MAPPING")}
-          onGoInventory={() => setTab("INVENTORY")}
-        />
-      )}
+            <div style={{ marginTop: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onUpload(f);
+                }}
+              />
+              <Button tone="ghost" onClick={() => setTab("MAPPING")} disabled={!data}>
+                Direkt zur Zuordnung
+              </Button>
+            </div>
+          </section>
+        )}
 
-      {tab === "INVENTORY" && <InventoryView data={data} onChange={recompute} />}
+        {tab === "INVENTUR" && (
+          <section style={{ padding: 14, border: "1px solid #d0d5dd", borderRadius: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 900, fontSize: 18 }}>2) Inventur</div>
+                <div style={{ color: "#667085", fontWeight: 650, marginTop: 6 }}>
+                  Hier siehst du, ob Ziel-Einheit / Packungsinhalt fehlen (das erzeugt Horrorwerte).
+                </div>
+              </div>
+            </div>
 
-      {tab === "MAPPING" && <MappingView data={data} onChange={recompute} />}
-    </div>
-  );
-}
-
-function DishView({
-  data,
-  dish,
-  onChange,
-  onGoMapping,
-  onGoInventory
-}: {
-  data: AppData | null;
-  dish: string | null;
-  onChange: (d: AppData) => void;
-  onGoMapping: () => void;
-  onGoInventory: () => void;
-}) {
-  const [sold, setSold] = useState(0);
-
-  if (!data || !dish) {
-    return (
-      <div className="card">
-        <div className="h1">Gericht</div>
-        <div className="small">Bitte zuerst Daten laden und ein Gericht wählen.</div>
-      </div>
-    );
-  }
-
-  const d = data.dishes.find((x) => x.dish === dish);
-  if (!d) {
-    return (
-      <div className="card">
-        <div className="h1">Gericht nicht gefunden</div>
-      </div>
-    );
-  }
-
-  const lines = data.recipes.filter((r) => r.dish === dish);
-  const invOptions = [...data.inventory.map((i) => i.name)].sort((a, b) => a.localeCompare(b, "de"));
-
-  const price = d.priceTest ?? d.priceMenu ?? d.priceMaster ?? null;
-  const rev = price && sold ? price * sold : null;
-  const cogs = d.cogs && sold ? d.cogs * sold : null;
-  const db = d.db && sold ? d.db * sold : null;
-
-  const getMapping = (recipeName: string) => data.mapping.find((m) => m.recipeName === recipeName) ?? null;
-
-  const setCorrection = (recipeName: string, invNameOrEmpty: string) => {
-    const c = clone(data);
-    ensureMappingRow(c, recipeName);
-    const m = c.mapping.find((x) => x.recipeName === recipeName);
-    if (!m) return;
-    m.correction = invNameOrEmpty ? invNameOrEmpty : null;
-    m.status = "OK";
-    onChange(c);
-  };
-
-  return (
-    <div className="card">
-      <div className="row">
-        <div>
-          <div className="h1">{dish}</div>
-          <div className="small">Mapping kannst du hier pro Zutat wählen.</div>
-        </div>
-        <div style={{ marginLeft: "auto" }} className="row">
-          <button className="secondary" onClick={onGoInventory}>Inventur</button>
-          <button className="secondary" onClick={onGoMapping}>Mapping</button>
-        </div>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      <div className="row">
-        <span className="badge">Wareneinsatz: {money(d.cogs)}</span>
-        <span className="badge">DB €: {money(d.db)}</span>
-        <span className="badge">DB %: {pct(d.dbPct)}</span>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      <div className="card">
-        <div className="small">Heute verkauft (optional)</div>
-        <div className="row" style={{ marginTop: 8 }}>
-          <input type="number" min={0} value={sold} onChange={(e) => setSold(Number(e.target.value))} style={{ width: 120 }} />
-          <span className="badge">Umsatz: {money(rev)}</span>
-          <span className="badge">Wareneinsatz: {money(cogs)}</span>
-          <span className="badge">DB gesamt: {money(db)}</span>
-        </div>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      <table className="table">
-        <thead>
-          <tr>
-            <th>Zutat</th>
-            <th>Menge</th>
-            <th>Einheit</th>
-            <th>Inventur-Artikel (Korrektur)</th>
-            <th>Kosten</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {lines.map((l, idx) => {
-            const m = getMapping(l.ingredientRecipe);
-            const hint = m?.suggestion ? `Vorschlag: ${m.suggestion}` : "kein Vorschlag";
-            return (
-              <tr key={idx}>
-                <td>{l.ingredientRecipe}</td>
-                <td>{l.qty ?? "—"}</td>
-                <td>{l.unit ?? "—"}</td>
-                <td style={{ width: 320 }}>
-                  <select
-                    value={m?.correction ?? ""}
-                    onChange={(e) => setCorrection(l.ingredientRecipe, e.target.value)}
-                    style={{ width: "100%" }}
-                  >
-                    <option value="">{`— (Vorschlag verwenden: ${hint})`}</option>
-                    {invOptions.map((name) => (
-                      <option key={name} value={name}>
-                        {name}
-                      </option>
+            {!data ? (
+              <div style={{ marginTop: 12, color: "#667085", fontWeight: 700 }}>Bitte erst eine Excel hochladen.</div>
+            ) : (
+              <div style={{ marginTop: 12, overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "#f2f4f7" }}>
+                      <th style={th}>Warengruppe</th>
+                      <th style={th}>Artikel</th>
+                      <th style={th}>EK (raw)</th>
+                      <th style={th}>Einheit (raw)</th>
+                      <th style={th}>Ziel</th>
+                      <th style={th}>Pack (Ziel)</th>
+                      <th style={th}>€/Basis</th>
+                      <th style={th}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.inventory.slice(0, 300).map((it, idx) => (
+                      <tr key={idx} style={{ borderTop: "1px solid #eaecf0" }}>
+                        <td style={td}>{it.group ?? "—"}</td>
+                        <td style={tdStrong}>{it.name}</td>
+                        <td style={td}>{it.ekRaw ?? "—"}</td>
+                        <td style={td}>{it.unitRaw ?? "—"}</td>
+                        <td style={td}>{it.targetUnit ?? "—"}</td>
+                        <td style={td}>{it.packTarget ?? it.packRaw ?? "—"}</td>
+                        <td style={td}>{it.pricePerBase === null ? "—" : it.pricePerBase.toFixed(6)}</td>
+                        <td style={td}>{it.status ? <Badge text={it.status} tone="bad" /> : <Badge text="OK" tone="ok" />}</td>
+                      </tr>
                     ))}
-                  </select>
-                </td>
-                <td>{money(l.cost)}</td>
-                <td>{l.status ?? "—"}</td>
-              </tr>
-            );
-          })}
-          {lines.length === 0 && (
-            <tr>
-              <td colSpan={6} className="small">Keine Rezeptzeilen gefunden.</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+                  </tbody>
+                </table>
 
-function InventoryView({ data, onChange }: { data: AppData | null; onChange: (d: AppData) => void }) {
-  const [q, setQ] = useState("");
-  const [newName, setNewName] = useState("");
-  const [newEK, setNewEK] = useState("");
-  const [newUnit, setNewUnit] = useState("kg");
+                <div style={{ marginTop: 10, color: "#667085", fontWeight: 650 }}>
+                  Anzeige ist auf 300 Zeilen begrenzt (Performance). Export zeigt alles.
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
-  if (!data) {
-    return (
-      <div className="card">
-        <div className="h1">Inventur</div>
-        <div className="small">Bitte zuerst Excel laden.</div>
-      </div>
-    );
-  }
+        {tab === "MAPPING" && (
+          <section style={{ padding: 14, border: "1px solid #d0d5dd", borderRadius: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 900, fontSize: 18 }}>3) Zuordnung (Rezept-Zutat → Inventur-Artikel)</div>
+                <div style={{ color: "#667085", fontWeight: 650, marginTop: 6 }}>
+                  Genau hier fixst du falsche Zuordnungen. Sobald du auswählst, rechnet WE/DB sofort neu.
+                </div>
+              </div>
 
-  const rows = data.inventory
-    .filter((i) => (q ? i.name.toLowerCase().includes(q.toLowerCase()) : true))
-    .sort((a, b) => a.name.localeCompare(b.name, "de"));
-
-  const add = () => {
-    const name = newName.trim();
-    if (!name) return;
-    const ek = toNumber(newEK);
-    const c = clone(data);
-    if (c.inventory.some((x) => x.name.toLowerCase() === name.toLowerCase())) return;
-    c.inventory.push({ name, ekRaw: ek ?? null, unitRaw: newUnit, ekBase: null, status: "NEU" });
-    onChange(c);
-    setNewName("");
-    setNewEK("");
-    setNewUnit("kg");
-  };
-
-  return (
-    <div className="card">
-      <div className="row">
-        <div>
-          <div className="h1">Inventur</div>
-          <div className="small">EK + Einheit pflegen (kg/g/l/ml/stk).</div>
-        </div>
-        <div style={{ marginLeft: "auto" }} className="row">
-          <input placeholder="Suchen…" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 220 }} />
-        </div>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      <div className="card">
-        <div className="small">Neue Zutat</div>
-        <div className="row" style={{ marginTop: 8 }}>
-          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Name" style={{ minWidth: 240 }} />
-          <input value={newEK} onChange={(e) => setNewEK(e.target.value)} placeholder="EK" style={{ width: 140 }} />
-          <select value={newUnit} onChange={(e) => setNewUnit(e.target.value)} style={{ width: 120 }}>
-            <option value="kg">kg</option><option value="g">g</option>
-            <option value="l">l</option><option value="ml">ml</option>
-            <option value="stk">stk</option>
-          </select>
-          <button className="primary" onClick={add}>+ Zutat</button>
-        </div>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      <table className="table">
-        <thead>
-          <tr>
-            <th>Zutat</th><th>EK</th><th>Einheit</th><th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((i) => (
-            <tr key={i.name}>
-              <td style={{ fontWeight: 800 }}>{i.name}</td>
-              <td style={{ width: 140 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <input
-                  value={i.ekRaw ?? ""}
-                  onChange={(e) => {
-                    const c = clone(data);
-                    const it = c.inventory.find((x) => x.name === i.name);
-                    if (it) it.ekRaw = e.target.value.trim() ? Number(e.target.value.replace(",", ".")) : null;
-                    onChange(c);
+                  placeholder="Suche Zutat…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: "1px solid #d0d5dd",
+                    minWidth: 240,
+                    fontWeight: 700,
                   }}
-                  style={{ width: 120 }}
                 />
-              </td>
-              <td style={{ width: 140 }}>
-                <select
-                  value={i.unitRaw ?? ""}
-                  onChange={(e) => {
-                    const c = clone(data);
-                    const it = c.inventory.find((x) => x.name === i.name);
-                    if (it) it.unitRaw = e.target.value || null;
-                    onChange(c);
+                <Button tone="ghost" onClick={() => setTab("GERICHTE")} disabled={!data}>
+                  Weiter zu Gerichten
+                </Button>
+              </div>
+            </div>
+
+            {!data ? (
+              <div style={{ marginTop: 12, color: "#667085", fontWeight: 700 }}>Bitte erst eine Excel hochladen.</div>
+            ) : (
+              <div style={{ marginTop: 12, overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "#f2f4f7" }}>
+                      <th style={th}>Rezept-Zutat</th>
+                      <th style={th}>Vorschlag</th>
+                      <th style={th}>Deine Auswahl</th>
+                      <th style={th}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.mapping
+                      .filter((m) => {
+                        const s = search.trim().toLowerCase();
+                        if (!s) return true;
+                        return m.recipeName.toLowerCase().includes(s);
+                      })
+                      .slice(0, 400)
+                      .map((m, idx) => {
+                        const selected = m.correction ?? "";
+                        return (
+                          <tr key={idx} style={{ borderTop: "1px solid #eaecf0" }}>
+                            <td style={tdStrong}>{m.recipeName}</td>
+                            <td style={td}>{m.suggestion ?? "—"}</td>
+                            <td style={td}>
+                              <select
+                                value={selected}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  applyMapping(m.recipeName, v ? v : null);
+                                }}
+                                style={{
+                                  width: "100%",
+                                  padding: "8px 10px",
+                                  borderRadius: 10,
+                                  border: "1px solid #d0d5dd",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                <option value="">— auswählen —</option>
+                                {invNames.map((n) => (
+                                  <option key={n} value={n}>
+                                    {n}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td style={td}>
+                              {m.status === "OK" ? <Badge text="OK" tone="ok" /> : <Badge text="PRÜFEN" tone="warn" />}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+
+                <div style={{ marginTop: 10, color: "#667085", fontWeight: 650 }}>
+                  Anzeige ist auf 400 Zeilen begrenzt. Nutze Suche.
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {tab === "GERICHTE" && (
+          <section style={{ padding: 14, border: "1px solid #d0d5dd", borderRadius: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 900, fontSize: 18 }}>4) Gerichte – Wareneinsatz & DB</div>
+                <div style={{ color: "#667085", fontWeight: 650, marginTop: 6 }}>
+                  Wenn hier noch Horrorwerte stehen, ist fast immer Inventur-Ziel-Einheit/Packungsinhalt nicht gepflegt.
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                  placeholder="Suche Gericht…"
+                  value={dishSearch}
+                  onChange={(e) => setDishSearch(e.target.value)}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: "1px solid #d0d5dd",
+                    minWidth: 240,
+                    fontWeight: 700,
                   }}
-                >
-                  <option value="">—</option>
-                  <option value="kg">kg</option><option value="g">g</option>
-                  <option value="l">l</option><option value="ml">ml</option>
-                  <option value="stk">stk</option>
-                </select>
-              </td>
-              <td>{i.status ?? "—"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                />
+                <Button tone="ghost" onClick={() => setTab("INVENTUR")} disabled={!data}>
+                  Zurück zur Inventur
+                </Button>
+              </div>
+            </div>
+
+            {!data ? (
+              <div style={{ marginTop: 12, color: "#667085", fontWeight: 700 }}>Bitte erst eine Excel hochladen.</div>
+            ) : (
+              <div style={{ marginTop: 12, overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "#f2f4f7" }}>
+                      <th style={th}>Gericht</th>
+                      <th style={th}>Preis (Master)</th>
+                      <th style={th}>Preis (Menü)</th>
+                      <th style={th}>Preis (Test)</th>
+                      <th style={th}>WE / Einheit</th>
+                      <th style={th}>DB / Einheit</th>
+                      <th style={th}>DB %</th>
+                      <th style={th}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dishRows.map((d, idx) => (
+                      <tr key={idx} style={{ borderTop: "1px solid #eaecf0" }}>
+                        <td style={tdStrong}>{d.dish}</td>
+                        <td style={td}>{d.priceMaster ?? "—"}</td>
+                        <td style={td}>{d.priceMenu ?? "—"}</td>
+                        <td style={td}>{d.priceTest ?? "—"}</td>
+                        <td style={td}>{d.cogs === null ? "—" : money(d.cogs)}</td>
+                        <td style={td}>{d.db === null ? "—" : money(d.db)}</td>
+                        <td style={td}>{d.dbPct === null ? "—" : pct(d.dbPct)}</td>
+                        <td style={td}>
+                          {d.status ? <Badge text={d.status} tone="bad" /> : <Badge text="OK" tone="ok" />}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+      </main>
     </div>
   );
 }
 
-function MappingView({ data, onChange }: { data: AppData | null; onChange: (d: AppData) => void }) {
-  const [q, setQ] = useState("");
+/** Simple table styles */
+const th: React.CSSProperties = {
+  textAlign: "left",
+  padding: "10px 10px",
+  borderBottom: "1px solid #eaecf0",
+  fontWeight: 900,
+  color: "#344054",
+  whiteSpace: "nowrap",
+};
 
-  if (!data) {
-    return (
-      <div className="card">
-        <div className="h1">Mapping</div>
-        <div className="small">Bitte zuerst Excel laden.</div>
-      </div>
-    );
-  }
+const td: React.CSSProperties = {
+  textAlign: "left",
+  padding: "10px 10px",
+  color: "#344054",
+  fontWeight: 650,
+  verticalAlign: "top",
+};
 
-  const invOptions = [...data.inventory.map((i) => i.name)].sort((a, b) => a.localeCompare(b, "de"));
-  const rows = data.mapping
-    .filter((m) => (q ? m.recipeName.toLowerCase().includes(q.toLowerCase()) : true))
-    .sort((a, b) => (a.status === "PRÜFEN" ? -1 : 1) - (b.status === "PRÜFEN" ? -1 : 1));
-
-  return (
-    <div className="card">
-      <div className="row">
-        <div>
-          <div className="h1">Mapping</div>
-          <div className="small">Rezept-Zutat → Inventur-Artikel.</div>
-        </div>
-        <div style={{ marginLeft: "auto" }} className="row">
-          <input placeholder="Suchen…" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 220 }} />
-        </div>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      <table className="table">
-        <thead>
-          <tr>
-            <th>Rezept-Zutat</th><th>Vorschlag</th><th>Korrektur</th><th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((m) => (
-            <tr key={m.recipeName}>
-              <td style={{ fontWeight: 800 }}>{m.recipeName}</td>
-              <td>{m.suggestion ?? "—"}</td>
-              <td style={{ width: 320 }}>
-                <select
-                  value={m.correction ?? ""}
-                  onChange={(e) => {
-                    const c = clone(data);
-                    const x = c.mapping.find((z) => z.recipeName === m.recipeName);
-                    if (x) {
-                      x.correction = e.target.value || null;
-                      x.status = "OK";
-                    }
-                    onChange(c);
-                  }}
-                  style={{ width: "100%" }}
-                >
-                  <option value="">— (Vorschlag verwenden)</option>
-                  {invOptions.map((name) => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
-              </td>
-              <td>{m.status ?? "—"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+const tdStrong: React.CSSProperties = {
+  ...td,
+  fontWeight: 900,
+};
