@@ -1,17 +1,52 @@
 import React, { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { useStore } from "../../state/store";
-import { money, pct, pickPrice } from "../../core/utils";
-import DecimalInput from "../components/DecimalInput";
+import { useStore } from "../../../state/store";
+import { money, pct, pickPrice, toNumber } from "../../../core/utils";
+
+function DecimalInput({
+  value,
+  placeholder,
+  onCommit,
+  width,
+}: {
+  value: number | null | undefined;
+  placeholder?: string;
+  onCommit: (n: number | null) => void;
+  width?: number | string;
+}) {
+  const [text, setText] = useState<string>(() => {
+    if (value === null || value === undefined) return "";
+    return String(value).replace(".", ",");
+  });
+
+  // Wenn sich value von außen ändert, aktualisieren (nur grob)
+  React.useEffect(() => {
+    if (value === null || value === undefined) setText("");
+    else setText(String(value).replace(".", ","));
+  }, [value]);
+
+  return (
+    <input
+      inputMode="decimal"
+      value={text}
+      placeholder={placeholder}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => {
+        const n = toNumber(text);
+        onCommit(n);
+      }}
+      style={{ width: width ?? 140 }}
+    />
+  );
+}
 
 export default function DishPage() {
-  const { name } = useParams();
-  const dishName = decodeURIComponent(name ?? "");
   const { data, update } = useStore();
-  const [sold, setSold] = useState<number>(0);
 
-  const dish = useMemo(() => data?.dishes.find((d) => d.dish === dishName) ?? null, [data, dishName]);
-  const lines = useMemo(() => data?.recipes.filter((r) => r.dish === dishName) ?? [], [data, dishName]);
+  const dishes = useMemo(() => data?.dishes ?? [], [data]);
+  const [selectedDish, setSelectedDish] = useState<string>(() => (dishes?.[0]?.dish ? String(dishes[0].dish) : ""));
+
+  const dish = useMemo(() => dishes.find((d: any) => String(d.dish) === String(selectedDish)) ?? null, [dishes, selectedDish]);
+  const price = dish ? pickPrice(dish) : null;
 
   if (!data) {
     return (
@@ -21,179 +56,80 @@ export default function DishPage() {
       </div>
     );
   }
+
   if (!dish) {
     return (
       <div className="card">
-        <div className="h1">Nicht gefunden</div>
-        <div className="small">Gericht nicht gefunden.</div>
-        <div style={{ height: 10 }} />
-        <Link to="/dashboard">Zurück</Link>
+        <div className="h1">Kein Gericht ausgewählt</div>
+        <div className="small">Bitte wähle oben ein Gericht aus.</div>
       </div>
     );
   }
 
-  const price = pickPrice(dish);
-  const db = dish.db ?? null;
-  const dbToday = db != null && sold > 0 ? db * sold : null;
-  const cogsToday = dish.cogs != null && sold > 0 ? dish.cogs * sold : null;
-  const revenueToday = price != null && sold > 0 ? price * sold : null;
-
   return (
-    <div className="grid two">
-      <div className="card">
-        <div className="row">
-          <div>
-            <div className="h1">{dish.dish}</div>
-            <div className="small">Preis testen → DB live. (Master bleibt Referenz. Test/Speisekarte sind Outlet-spezifisch.)</div>
-          </div>
-          <div className="right">
-            <Link to="/dashboard" className="badge">← Dashboard</Link>
-          </div>
-        </div>
+    <div className="card">
+      <div className="row" style={{ gap: 12, alignItems: "center" }}>
+        <div className="h1" style={{ margin: 0 }}>Gericht</div>
 
-        <div style={{ height: 14 }} />
-
-        <div className="grid">
-          <div className="card">
-            <div className="small">Preise</div>
-            <div className="row" style={{ marginTop: 8 }}>
-              <div>
-                <div className="small">Master</div>
-                <div style={{ fontWeight: 900 }}>{money(dish.priceMaster ?? null)}</div>
-              </div>
-
-              <div>
-                <div className="small">Speisekarte (Outlet)</div>
-                <DecimalInput
-                  value={dish.priceMenu ?? null}
-                  placeholder="z.B. 8,90"
-                  width={160}
-                  onCommit={(next) => {
-                    update(({ outlet }) => {
-                      const o = outlet.overridesByOutletId[outlet.selectedOutletId];
-                      if (!o.prices[dish.dish]) o.prices[dish.dish] = { priceMenu: null, priceTest: null };
-                      o.prices[dish.dish].priceMenu = next;
-                    });
-                  }}
-                />
-              </div>
-
-              <div>
-                <div className="small">Testpreis (Outlet)</div>
-                <DecimalInput
-                  value={dish.priceTest ?? null}
-                  placeholder="z.B. 8,90"
-                  width={160}
-                  onCommit={(next) => {
-                    update(({ outlet }) => {
-                      const o = outlet.overridesByOutletId[outlet.selectedOutletId];
-                      if (!o.prices[dish.dish]) o.prices[dish.dish] = { priceMenu: null, priceTest: null };
-                      o.prices[dish.dish].priceTest = next;
-                    });
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="small">Ergebnis pro Stück</div>
-            <div className="row" style={{ marginTop: 8 }}>
-              <div className="kpi">
-                <div className="small">Wareneinsatz</div>
-                <div className="v">{money(dish.cogs ?? null)}</div>
-              </div>
-              <div className="kpi">
-                <div className="small">DB €</div>
-                <div className="v">{money(dish.db ?? null)}</div>
-              </div>
-              <div className="kpi">
-                <div className="small">DB %</div>
-                <div className="v">{pct(dish.dbPct ?? null)}</div>
-              </div>
-              <div className="pill right">
-                Status: <b>{dish.status ?? "—"}</b>
-              </div>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="small">Heute verkauft (optional)</div>
-            <div className="row" style={{ marginTop: 8 }}>
-              <input
-                type="number"
-                min={0}
-                value={sold}
-                onChange={(e) => setSold(Number(e.target.value))}
-                style={{ width: 140 }}
-              />
-              <span className="badge">Umsatz: {money(revenueToday)}</span>
-              <span className="badge">Wareneinsatz: {money(cogsToday)}</span>
-              <span className="badge">DB gesamt: {money(dbToday)}</span>
-            </div>
-          </div>
-        </div>
+        <select value={selectedDish} onChange={(e) => setSelectedDish(e.target.value)} style={{ minWidth: 280 }}>
+          {dishes.map((d: any) => (
+            <option key={String(d.dish)} value={String(d.dish)}>
+              {String(d.dish)}
+            </option>
+          ))}
+        </select>
       </div>
 
-      <div className="card">
-        <div className="h1">Rezept (global)</div>
-        <div className="small">Mengen ändern → Wareneinsatz und DB ändern sich in allen Outlets.</div>
-        <div style={{ height: 10 }} />
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Zutat</th>
-              <th>Menge</th>
-              <th>Einheit</th>
-              <th>Gemappt</th>
-              <th>Kosten</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {lines.map((l, idx) => (
-              <tr key={idx}>
-                <td>{l.ingredientRecipe}</td>
+      <div style={{ height: 12 }} />
 
-                <td style={{ width: 140 }}>
-                  <DecimalInput
-                    value={l.qty ?? null}
-                    placeholder="z.B. 120"
-                    width={110}
-                    onCommit={(next) => {
-                      update(({ base }) => {
-                        const r = base.recipes.find((x) => x.dish === l.dish && x.ingredientRecipe === l.ingredientRecipe);
-                        if (r) r.qty = next;
-                      });
-                    }}
-                  />
-                </td>
+      <div className="grid" style={{ gap: 12 }}>
+        <div className="card">
+          <div className="small">Preise</div>
+          <div className="row" style={{ marginTop: 8, gap: 16 }}>
+            <div>
+              <div className="small">Master</div>
+              <div style={{ fontWeight: 900 }}>{money(dish.priceMaster ?? null)}</div>
+            </div>
 
-                <td style={{ width: 120 }}>
-                  <select
-                    value={l.unit ?? ""}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      update(({ base }) => {
-                        const r = base.recipes.find((x) => x.dish === l.dish && x.ingredientRecipe === l.ingredientRecipe);
-                        if (r) r.unit = v || null;
-                      });
-                    }}
-                  >
-                    <option value="">—</option>
-                    <option value="g">g</option>
-                    <option value="ml">ml</option>
-                    <option value="stk">stk</option>
-                  </select>
-                </td>
+            <div>
+              <div className="small">Speisekarte (frei)</div>
+              <DecimalInput
+                value={dish.priceMenu ?? null}
+                placeholder="z.B. 8,90"
+                onCommit={(n) => {
+                  update((base) => {
+                    const target = (base.dishes ?? []).find((x: any) => String(x.dish) === String(dish.dish));
+                    if (target) target.priceMenu = n;
+                  });
+                }}
+              />
+            </div>
 
-                <td>{l.mappedInventory ?? "—"}</td>
-                <td>{money(l.cost ?? null)}</td>
-                <td>{l.status ?? "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            <div>
+              <div className="small">Testpreis (frei)</div>
+              <DecimalInput
+                value={dish.priceTest ?? null}
+                placeholder="z.B. 8,90"
+                onCommit={(n) => {
+                  update((base) => {
+                    const target = (base.dishes ?? []).find((x: any) => String(x.dish) === String(dish.dish));
+                    if (target) target.priceTest = n;
+                  });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="small">Ergebnis pro Stück</div>
+          <div className="row" style={{ marginTop: 8, gap: 16 }}>
+            <div><b>Preis:</b> {money(price)}</div>
+            <div><b>Wareneinsatz:</b> {money(dish.cogs ?? null)}</div>
+            <div><b>DB €:</b> {money(dish.db ?? null)}</div>
+            <div><b>DB %:</b> {pct(dish.dbPct ?? null)}</div>
+          </div>
+        </div>
       </div>
     </div>
   );
