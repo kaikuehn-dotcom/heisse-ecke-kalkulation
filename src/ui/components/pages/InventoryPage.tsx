@@ -11,19 +11,19 @@ export default function InventoryPage() {
     if (!data?.inventory) return [];
     const qq = q.toLowerCase().trim();
 
-    // WICHTIG: .sort() NICHT auf dem Original machen, sonst mutierst du State
+    // NICHT den Store mutieren:
     const copy = [...(data.inventory as any[])];
 
+    // Sortierung bleibt ok – aber Fokusproblem lösen wir über stabile keys unten.
     return copy
-      .filter((i: any) => (qq ? String(i.name ?? "").toLowerCase().includes(qq) : true))
-      .sort((a: any, b: any) => String(a.name ?? "").localeCompare(String(b.name ?? ""), "de"));
+      .filter((i: any) => (qq ? String(i.name ?? "").toLowerCase().includes(qq) : true));
   }, [data, q]);
 
   if (!data) {
     return (
       <div className="card">
         <div className="h1">Inventur</div>
-        <div className="small">Bitte zuerst Excel/JSON laden.</div>
+        <div className="small">Bitte zuerst Daten laden.</div>
       </div>
     );
   }
@@ -33,7 +33,9 @@ export default function InventoryPage() {
       <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
         <div>
           <div className="h1">Inventur</div>
-          <div className="small">Preise überschreiben (mit Komma). Cursor bleibt jetzt im Feld.</div>
+          <div className="small">
+            Preise überschreiben (Komma erlaubt). Cursor darf NICHT mehr raus springen.
+          </div>
         </div>
 
         <input
@@ -56,19 +58,31 @@ export default function InventoryPage() {
           </tr>
         </thead>
         <tbody>
-          {rows.map((i: any) => (
-            <tr key={String(i.name)}>
+          {rows.map((i: any, idx: number) => (
+            // WICHTIG: eindeutiger key, auch wenn Namen doppelt/leer sind
+            <tr key={`${String(i.name ?? "ohne_name")}__${idx}`}>
               <td style={{ fontWeight: 800 }}>{String(i.name ?? "")}</td>
 
-              <td style={{ width: 140 }}>
+              <td style={{ width: 160 }}>
                 <DecimalInput
                   value={i.ekRaw ?? null}
                   placeholder="z.B. 12,49"
+                  width={140}
                   onCommit={(n) => {
                     update((base: any) => {
                       const inv = (base.inventory ?? []) as any[];
-                      const row = inv.find((x: any) => String(x.name) === String(i.name));
-                      if (row) row.ekRaw = n;
+                      // gleiche Sortierung/Index ist nicht garantiert → suche über Name + idx fallback
+                      // Primär: Name match. Wenn mehrfach vorhanden: nimm das idx-te Vorkommen.
+                      const name = String(i.name ?? "");
+                      const matches = inv
+                        .map((x: any, j: number) => ({ x, j }))
+                        .filter(({ x }: any) => String(x.name ?? "") === name);
+
+                      let target: any = null;
+                      if (matches.length <= 1) target = matches[0]?.x ?? null;
+                      else target = matches[Math.min(idx, matches.length - 1)]?.x ?? matches[0]?.x ?? null;
+
+                      if (target) target.ekRaw = n;
                     });
                   }}
                 />
@@ -81,8 +95,16 @@ export default function InventoryPage() {
                     const v = e.target.value || null;
                     update((base: any) => {
                       const inv = (base.inventory ?? []) as any[];
-                      const row = inv.find((x: any) => String(x.name) === String(i.name));
-                      if (row) row.unitRaw = v;
+                      const name = String(i.name ?? "");
+                      const matches = inv
+                        .map((x: any, j: number) => ({ x, j }))
+                        .filter(({ x }: any) => String(x.name ?? "") === name);
+
+                      let target: any = null;
+                      if (matches.length <= 1) target = matches[0]?.x ?? null;
+                      else target = matches[Math.min(idx, matches.length - 1)]?.x ?? matches[0]?.x ?? null;
+
+                      if (target) target.unitRaw = v;
                     });
                   }}
                 >
