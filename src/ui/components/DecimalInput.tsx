@@ -1,89 +1,43 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { toNumber } from "../../core/utils";
-
-function formatDe(n: number): string {
-  // Für Eingabefelder: möglichst „human“, mit Komma.
-  // Keine Währung, nur Zahl.
-  return new Intl.NumberFormat("de-DE", {
-    maximumFractionDigits: 6,
-  }).format(n);
-}
 
 type Props = {
   value: number | null | undefined;
   placeholder?: string;
-  onCommit: (next: number | null) => void;
-  style?: React.CSSProperties;
-  className?: string;
+  onCommit: (n: number | null) => void;
   width?: number | string;
 };
 
-export default function DecimalInput({
-  value,
-  placeholder,
-  onCommit,
-  style,
-  className,
-  width,
-}: Props) {
-  const initial = useMemo(() => {
-    if (value === null || value === undefined || !Number.isFinite(value)) return "";
-    return formatDe(value);
-  }, [value]);
+export default function DecimalInput({ value, placeholder, onCommit, width }: Props) {
+  const [text, setText] = useState<string>(() => {
+    if (value === null || value === undefined) return "";
+    return String(value).replace(".", ",");
+  });
 
-  const [text, setText] = useState<string>(initial);
-  const [focused, setFocused] = useState(false);
-  const lastProp = useRef<string>(initial);
+  const focused = useRef(false);
 
+  // WICHTIG: nur synchronisieren, wenn wir NICHT gerade tippen,
+  // sonst springt der Cursor / Fokus raus.
   useEffect(() => {
-    // Wenn der Nutzer NICHT gerade tippt, synchronisieren wir Anzeige mit dem gespeicherten Wert.
-    if (!focused) {
-      const next = initial;
-      lastProp.current = next;
-      setText(next);
-    }
-  }, [initial, focused]);
-
-  const commit = () => {
-    const trimmed = (text ?? "").trim();
-    if (trimmed === "") {
-      onCommit(null);
-      return;
-    }
-    const parsed = toNumber(trimmed);
-    if (parsed === null) {
-      // Ungültig -> zurück auf letzten gültigen Wert (oder leer)
-      setText(lastProp.current ?? "");
-      return;
-    }
-    onCommit(parsed);
-  };
+    if (focused.current) return;
+    if (value === null || value === undefined) setText("");
+    else setText(String(value).replace(".", ","));
+  }, [value]);
 
   return (
     <input
-      className={className}
       inputMode="decimal"
-      placeholder={placeholder}
       value={text}
-      onFocus={() => setFocused(true)}
+      placeholder={placeholder}
+      onFocus={() => {
+        focused.current = true;
+      }}
       onBlur={() => {
-        setFocused(false);
-        commit();
+        focused.current = false;
+        onCommit(toNumber(text));
       }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          (e.target as HTMLInputElement).blur();
-        }
-        if (e.key === "Escape") {
-          setText(lastProp.current ?? "");
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-      onChange={(e) => {
-        // Nutzer darf frei tippen: Komma, Punkt, etc.
-        setText(e.target.value);
-      }}
-      style={{ width: width ?? undefined, ...(style ?? {}) }}
+      onChange={(e) => setText(e.target.value)}
+      style={{ width: width ?? 120 }}
     />
   );
 }
