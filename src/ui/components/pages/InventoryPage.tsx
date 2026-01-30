@@ -1,48 +1,20 @@
 import React, { useMemo, useState } from "react";
 import { useStore } from "../../../state/store";
-import { money, toNumber } from "../../../core/utils";
-
-function DecimalInput({
-  value,
-  placeholder,
-  onCommit,
-  width,
-}: {
-  value: number | null | undefined;
-  placeholder?: string;
-  onCommit: (n: number | null) => void;
-  width?: number | string;
-}) {
-  const [text, setText] = useState<string>(() => {
-    if (value === null || value === undefined) return "";
-    return String(value).replace(".", ",");
-  });
-
-  React.useEffect(() => {
-    if (value === null || value === undefined) setText("");
-    else setText(String(value).replace(".", ","));
-  }, [value]);
-
-  return (
-    <input
-      inputMode="decimal"
-      value={text}
-      placeholder={placeholder}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={() => onCommit(toNumber(text))}
-      style={{ width: width ?? 120 }}
-    />
-  );
-}
+import { money } from "../../../core/utils";
+import DecimalInput from "../DecimalInput";
 
 export default function InventoryPage() {
   const { data, update } = useStore();
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState<string>("");
 
-  const rows = useMemo(() => {
+  const rows = useMemo<any[]>(() => {
     if (!data?.inventory) return [];
     const qq = q.toLowerCase().trim();
-    return (data.inventory as any[])
+
+    // WICHTIG: .sort() NICHT auf dem Original machen, sonst mutierst du State
+    const copy = [...(data.inventory as any[])];
+
+    return copy
       .filter((i: any) => (qq ? String(i.name ?? "").toLowerCase().includes(qq) : true))
       .sort((a: any, b: any) => String(a.name ?? "").localeCompare(String(b.name ?? ""), "de"));
   }, [data, q]);
@@ -51,7 +23,7 @@ export default function InventoryPage() {
     return (
       <div className="card">
         <div className="h1">Inventur</div>
-        <div className="small">Bitte zuerst Excel laden.</div>
+        <div className="small">Bitte zuerst Excel/JSON laden.</div>
       </div>
     );
   }
@@ -61,7 +33,7 @@ export default function InventoryPage() {
       <div className="row" style={{ justifyContent: "space-between", gap: 12 }}>
         <div>
           <div className="h1">Inventur</div>
-          <div className="small">Hier kannst du Preise überschreiben (mit Komma). Das wirkt direkt auf Wareneinsatz/DB.</div>
+          <div className="small">Preise überschreiben (mit Komma). Cursor bleibt jetzt im Feld.</div>
         </div>
 
         <input
@@ -93,7 +65,7 @@ export default function InventoryPage() {
                   value={i.ekRaw ?? null}
                   placeholder="z.B. 12,49"
                   onCommit={(n) => {
-                    update((base) => {
+                    update((base: any) => {
                       const inv = (base.inventory ?? []) as any[];
                       const row = inv.find((x: any) => String(x.name) === String(i.name));
                       if (row) row.ekRaw = n;
@@ -107,7 +79,7 @@ export default function InventoryPage() {
                   value={String(i.unitRaw ?? "")}
                   onChange={(e) => {
                     const v = e.target.value || null;
-                    update((base) => {
+                    update((base: any) => {
                       const inv = (base.inventory ?? []) as any[];
                       const row = inv.find((x: any) => String(x.name) === String(i.name));
                       if (row) row.unitRaw = v;
