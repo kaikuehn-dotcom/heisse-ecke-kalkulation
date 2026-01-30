@@ -12,12 +12,43 @@ export default function DecimalInput({ value, placeholder, onCommit, width }: Pr
   const [text, setText] = useState<string>("");
   const focused = useRef(false);
 
-  // Nur synchronisieren wenn wir NICHT aktiv tippen
+  // Debounce-Commit (speichert nach Tipp-Pause automatisch)
+  const tRef = useRef<string>("");
+  const timerRef = useRef<number | null>(null);
+
+  const scheduleCommit = (nextText: string) => {
+    tRef.current = nextText;
+
+    if (timerRef.current) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+
+    timerRef.current = window.setTimeout(() => {
+      const n = toNumber(tRef.current);
+      onCommit(n);
+    }, 400);
+  };
+
+  // Wenn Wert von außen kommt: nur übernehmen, wenn wir NICHT gerade tippen
   useEffect(() => {
     if (focused.current) return;
-    if (value === null || value === undefined) setText("");
-    else setText(String(value).replace(".", ","));
+    if (value === null || value === undefined) {
+      setText("");
+      tRef.current = "";
+    } else {
+      const s = String(value).replace(".", ",");
+      setText(s);
+      tRef.current = s;
+    }
   }, [value]);
+
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    };
+  }, []);
 
   return (
     <input
@@ -25,12 +56,35 @@ export default function DecimalInput({ value, placeholder, onCommit, width }: Pr
       inputMode="decimal"
       value={text}
       placeholder={placeholder}
-      onFocus={() => (focused.current = true)}
+      onFocus={() => {
+        focused.current = true;
+      }}
       onBlur={() => {
         focused.current = false;
-        onCommit(toNumber(text)); // Komma wird korrekt akzeptiert
+        // Commit sofort beim Verlassen (und Timer killen)
+        if (timerRef.current) {
+          window.clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+        onCommit(toNumber(tRef.current));
       }}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        const next = e.target.value;
+        setText(next);
+        scheduleCommit(next);
+      }}
+      onKeyDown={(e) => {
+        // Enter = sofort speichern
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (timerRef.current) {
+            window.clearTimeout(timerRef.current);
+            timerRef.current = null;
+          }
+          onCommit(toNumber(tRef.current));
+          (e.currentTarget as HTMLInputElement).blur();
+        }
+      }}
       style={{ width: width ?? 140 }}
     />
   );
