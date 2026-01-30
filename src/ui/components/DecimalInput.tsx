@@ -9,25 +9,68 @@ type Props = {
 };
 
 export default function DecimalInput({ value, placeholder, onCommit, width }: Props) {
-  const [text, setText] = useState<string>("");
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const isFocused = useRef(false);
 
-  // Nur wenn NICHT fokussiert: Wert von außen übernehmen.
+  // Text, den du tippst (mit Komma möglich)
+  const [text, setText] = useState<string>("");
+
+  // Merkt, ob du gerade aktiv in diesem Feld bist
+  const editingRef = useRef(false);
+
+  // Merkt letzten "gültigen" Text, damit wir nicht dauernd überschreiben
+  const lastSyncedRef = useRef<string>("");
+
+  // 1) Nur wenn du NICHT tippst, übernehmen wir den Wert von außen
   useEffect(() => {
-    if (isFocused.current) return;
-    if (value === null || value === undefined) setText("");
-    else setText(String(value).replace(".", ","));
+    if (editingRef.current) return;
+
+    const next =
+      value === null || value === undefined ? "" : String(value).replace(".", ",");
+
+    lastSyncedRef.current = next;
+    setText(next);
   }, [value]);
 
-  // HARTER FIX: Stoppe globale Keydown/Hotkey-Listener (capture phase)
+  // 2) Fokus-Guard: solange du tippst, holen wir den Fokus notfalls zurück
+  useEffect(() => {
+    let timer: any = null;
+
+    const startGuard = () => {
+      if (timer) return;
+      timer = setInterval(() => {
+        if (!editingRef.current) return;
+        const el = inputRef.current;
+        if (!el) return;
+
+        // Falls irgendwer den Fokus klaut -> zurückholen
+        if (document.activeElement !== el) {
+          try {
+            el.focus({ preventScroll: true });
+          } catch {
+            el.focus();
+          }
+        }
+      }, 50);
+    };
+
+    const stopGuard = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+
+    // Startet automatisch, wenn editingRef true ist (siehe onFocus)
+    // und stoppt beim Unmount
+    startGuard();
+    return () => stopGuard();
+  }, []);
+
+  // 3) Hard stop: blockiert globale Keydown/Hotkey-Listener auf Capture-Ebene
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
 
     const stop = (ev: Event) => {
-      // stoppt auch Listener, die auf window/document hängen
-      // (sofern sie nicht ebenfalls capture+passive mit Tricks arbeiten)
+      // verhindert "Hotkeys"/globales Handling, das Fokus klaut
       // @ts-ignore
       if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
       ev.stopPropagation();
@@ -36,15 +79,21 @@ export default function DecimalInput({ value, placeholder, onCommit, width }: Pr
     el.addEventListener("keydown", stop, true);
     el.addEventListener("keyup", stop, true);
     el.addEventListener("keypress", stop, true);
-    el.addEventListener("input", stop, true);
 
     return () => {
       el.removeEventListener("keydown", stop, true);
       el.removeEventListener("keyup", stop, true);
       el.removeEventListener("keypress", stop, true);
-      el.removeEventListener("input", stop, true);
     };
   }, []);
+
+  const commit = () => {
+    const n = toNumber(text);
+    onCommit(n);
+    // Nach Commit merken wir uns den Text als "synced"
+    lastSyncedRef.current =
+      n === null ? "" : String(n).replace(".", ",");
+  };
 
   return (
     <input
@@ -53,16 +102,26 @@ export default function DecimalInput({ value, placeholder, onCommit, width }: Pr
       inputMode="decimal"
       value={text}
       placeholder={placeholder}
-      onFocus={() => (isFocused.current = true)}
-      onBlur={() => {
-        isFocused.current = false;
-        onCommit(toNumber(text));
+      style={{ width: width ?? 140 }}
+
+      onFocus={() => {
+        editingRef.current = true;
       }}
-      onChange={(e) => setText(e.target.value)}
-      // zusätzlich: auch Maus-Events nicht nach oben „durchreichen“
+
+      onBlur={() => {
+        // Wichtig: erst committen, dann editing aus
+        commit();
+        editingRef.current = false;
+      }}
+
+      onChange={(e) => {
+        // Freies Tippen erlaubt: 3, 3,5 3,50 etc.
+        setText(e.target.value);
+      }}
+
+      // Maus-Events nicht nach oben durchreichen (hilft bei Table/Row-Handlern)
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
-      style={{ width: width ?? 140 }}
     />
   );
 }
