@@ -1,58 +1,26 @@
 import React, { useMemo, useState } from "react";
 import { useStore } from "../../../state/store";
-import { money, pct, pickPrice, toNumber } from "../../../core/utils";
-
-function DecimalInput({
-  value,
-  placeholder,
-  onCommit,
-  width,
-}: {
-  value: number | null | undefined;
-  placeholder?: string;
-  onCommit: (n: number | null) => void;
-  width?: number | string;
-}) {
-  const [text, setText] = useState<string>(() => {
-    if (value === null || value === undefined) return "";
-    return String(value).replace(".", ",");
-  });
-
-  // Wenn sich value von außen ändert, aktualisieren (nur grob)
-  React.useEffect(() => {
-    if (value === null || value === undefined) setText("");
-    else setText(String(value).replace(".", ","));
-  }, [value]);
-
-  return (
-    <input
-      inputMode="decimal"
-      value={text}
-      placeholder={placeholder}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={() => {
-        const n = toNumber(text);
-        onCommit(n);
-      }}
-      style={{ width: width ?? 140 }}
-    />
-  );
-}
+import { money, pct, pickPrice } from "../../../core/utils";
+import DecimalInput from "../DecimalInput";
 
 export default function DishPage() {
   const { data, update } = useStore();
 
-  const dishes = useMemo(() => data?.dishes ?? [], [data]);
-  const [selectedDish, setSelectedDish] = useState<string>(() => (dishes?.[0]?.dish ? String(dishes[0].dish) : ""));
+  const dishes = useMemo<any[]>(() => (data?.dishes ?? []) as any[], [data]);
+  const [selectedDish, setSelectedDish] = useState<string>(() =>
+    dishes?.[0]?.dish ? String(dishes[0].dish) : ""
+  );
 
-  const dish = useMemo(() => dishes.find((d: any) => String(d.dish) === String(selectedDish)) ?? null, [dishes, selectedDish]);
-  const price = dish ? pickPrice(dish) : null;
+  const dish = useMemo<any | null>(
+    () => dishes.find((d: any) => String(d.dish) === String(selectedDish)) ?? null,
+    [dishes, selectedDish]
+  );
 
   if (!data) {
     return (
       <div className="card">
         <div className="h1">Gericht</div>
-        <div className="small">Bitte zuerst Excel laden.</div>
+        <div className="small">Bitte zuerst Excel/JSON laden.</div>
       </div>
     );
   }
@@ -66,10 +34,14 @@ export default function DishPage() {
     );
   }
 
+  const price = pickPrice(dish);
+
   return (
     <div className="card">
       <div className="row" style={{ gap: 12, alignItems: "center" }}>
-        <div className="h1" style={{ margin: 0 }}>Gericht</div>
+        <div className="h1" style={{ margin: 0 }}>
+          Gericht
+        </div>
 
         <select value={selectedDish} onChange={(e) => setSelectedDish(e.target.value)} style={{ minWidth: 280 }}>
           {dishes.map((d: any) => (
@@ -84,7 +56,7 @@ export default function DishPage() {
 
       <div className="grid" style={{ gap: 12 }}>
         <div className="card">
-          <div className="small">Preise</div>
+          <div className="small">Preise (Komma erlaubt)</div>
           <div className="row" style={{ marginTop: 8, gap: 16 }}>
             <div>
               <div className="small">Master</div>
@@ -97,7 +69,7 @@ export default function DishPage() {
                 value={dish.priceMenu ?? null}
                 placeholder="z.B. 8,90"
                 onCommit={(n) => {
-                  update((base) => {
+                  update((base: any) => {
                     const target = (base.dishes ?? []).find((x: any) => String(x.dish) === String(dish.dish));
                     if (target) target.priceMenu = n;
                   });
@@ -111,7 +83,7 @@ export default function DishPage() {
                 value={dish.priceTest ?? null}
                 placeholder="z.B. 8,90"
                 onCommit={(n) => {
-                  update((base) => {
+                  update((base: any) => {
                     const target = (base.dishes ?? []).find((x: any) => String(x.dish) === String(dish.dish));
                     if (target) target.priceTest = n;
                   });
