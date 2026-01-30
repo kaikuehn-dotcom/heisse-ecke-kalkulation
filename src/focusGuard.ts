@@ -1,6 +1,7 @@
-// Globaler Fokus-Guard: verhindert, dass Inputs nach dem ersten Zeichen den Fokus verlieren.
-// Wir halten während des Tippens den Fokus im aktiven Feld.
-// Das ist ein "Hotfix", der global wirkt, ohne deine App-Logik umzubauen.
+// Fokus-Guard (sanft):
+// - verhindert "Fokus springt nach 1 Zeichen weg"
+// - ABER: blockiert NICHT das Wechseln in ein anderes Eingabefeld
+// - greift nur, wenn Fokus beim Tippen auf "nichts" (body/html) fällt
 
 let lastField: HTMLElement | null = null;
 let typingUntil = 0;
@@ -11,12 +12,13 @@ function isField(el: any): el is HTMLElement {
   return tag === "input" || tag === "textarea" || el.isContentEditable === true;
 }
 
-function markTyping() {
-  typingUntil = Date.now() + 800; // 0,8s nach letztem Input gilt: "tippt gerade"
-}
-
 function isTypingNow() {
   return Date.now() < typingUntil;
+}
+
+function markTyping() {
+  // sehr kurz – nur um "Fokus klaut sich direkt weg" abzufangen
+  typingUntil = Date.now() + 200;
 }
 
 function refocusSoon() {
@@ -33,15 +35,24 @@ function refocusSoon() {
   }, 0);
 }
 
-// Merken, welches Feld aktiv ist
+// Merke letztes aktives Feld
 document.addEventListener(
   "focusin",
   (e) => {
     const t: any = e.target;
-    if (isField(t)) lastField = t;
 
-    // Wenn während Tippen plötzlich auf NICHT-Feld fokussiert wird -> zurück
-    if (isTypingNow() && !isField(t) && lastField) refocusSoon();
+    if (isField(t)) {
+      lastField = t;
+      return;
+    }
+
+    // Nur wenn wir gerade tippen UND Fokus auf "nichts" geht:
+    const tag = String(t?.tagName || "").toLowerCase();
+    const isNothing = tag === "body" || tag === "html" || t === document.body || t === document.documentElement;
+
+    if (isTypingNow() && isNothing && lastField) {
+      refocusSoon();
+    }
   },
   true
 );
@@ -66,20 +77,6 @@ document.addEventListener(
     if (isField(t)) {
       lastField = t;
       markTyping();
-    }
-  },
-  true
-);
-
-// Wenn Fokus beim Tippen rausfliegt -> sofort zurück
-document.addEventListener(
-  "focusout",
-  (e) => {
-    if (!isTypingNow()) return;
-    const from: any = e.target;
-    if (isField(from)) {
-      lastField = from;
-      refocusSoon();
     }
   },
   true
