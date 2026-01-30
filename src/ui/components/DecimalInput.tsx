@@ -9,34 +9,40 @@ type Props = {
 };
 
 export default function DecimalInput({ value, placeholder, onCommit, width }: Props) {
-  const [text, setText] = useState<string>(() => {
-    if (value === null || value === undefined) return "";
-    return String(value).replace(".", ",");
-  });
+  const [text, setText] = useState<string>("");
+  const isFocused = useRef(false);
 
-  const focused = useRef(false);
-
-  // WICHTIG: nur synchronisieren, wenn wir NICHT gerade tippen,
-  // sonst springt der Cursor / Fokus raus.
+  // Nur initial / wenn NICHT fokussiert: Text aus value setzen.
   useEffect(() => {
-    if (focused.current) return;
+    if (isFocused.current) return;
     if (value === null || value === undefined) setText("");
     else setText(String(value).replace(".", ","));
   }, [value]);
 
   return (
     <input
+      type="text"
       inputMode="decimal"
       value={text}
       placeholder={placeholder}
       onFocus={() => {
-        focused.current = true;
+        isFocused.current = true;
       }}
       onBlur={() => {
-        focused.current = false;
+        isFocused.current = false;
         onCommit(toNumber(text));
       }}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        // Freies Tippen erlauben: Zahlen, Komma, Punkt
+        setText(e.target.value);
+      }}
+      onKeyDown={(e) => {
+        // WICHTIG: verhindert, dass Container/Table Keydowns “fangen”
+        // und dadurch Fokus/Selection springen lassen.
+        e.stopPropagation();
+      }}
+      onKeyUp={(e) => e.stopPropagation()}
+      onKeyPress={(e) => e.stopPropagation()}
       style={{ width: width ?? 120 }}
     />
   );
