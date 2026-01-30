@@ -1,3 +1,4 @@
+import "./focusGuard";
 import React, { useEffect, useMemo, useState } from "react";
 import type { AppData, DishRow, InventoryItem, RecipeLine } from "./core";
 import { parseWorkbook, recalcAll, exportWorkbook, money, pct } from "./core";
